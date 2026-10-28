@@ -1,5 +1,6 @@
 # Pins the toolchain for this repo. rustup reads this and installs the listed
-# channel and components automatically when you run cargo here.
+# version and components automatically when you run cargo here (including in CI).
+# Pinned so a new Rust release can't add clippy lints that break CI; bump deliberately.
 [toolchain]
-channel = "stable"
+channel = "1.99.1"
 components = ["rustfmt", "clippy"]

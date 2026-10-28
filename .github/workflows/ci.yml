@@ -15,12 +15,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # Installs the version and components listed in rust-toolchain.toml.
+      - run: rustup toolchain install
       # Caches ~/.cargo and target/ between runs so builds after the first are fast.
       - uses: Swatinem/rust-cache@v2
       # Each step fails the job on a non-zero exit, so any fmt, lint, or test error fails CI.
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      # --locked fails if Cargo.lock is out of date instead of silently updating it.
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
