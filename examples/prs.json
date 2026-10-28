@@ -1,0 +1,578 @@
+{
+  "version": 1,
+  "title": "Open pull requests",
+  "key": "number",
+  "columns": [
+    {
+      "name": "number",
+      "type": "number"
+    },
+    {
+      "name": "title",
+      "width": 50
+    },
+    {
+      "name": "author"
+    },
+    {
+      "name": "state"
+    },
+    {
+      "name": "additions",
+      "type": "number"
+    },
+    {
+      "name": "deletions",
+      "type": "number"
+    },
+    {
+      "name": "labels"
+    },
+    {
+      "name": "updated_at"
+    },
+    {
+      "name": "url"
+    }
+  ],
+  "rows": [
+    {
+      "number": 409,
+      "title": "Fix login redirect",
+      "author": "jordan",
+      "state": "open",
+      "additions": 313,
+      "deletions": 65,
+      "labels": [
+        "bug",
+        "ci",
+        "enhancement"
+      ],
+      "updated_at": "2026-10-25T20:34:00Z",
+      "url": "https://github.com/example/shop/pull/409"
+    },
+    {
+      "number": 404,
+      "title": "Bump serde to 1.0.229",
+      "author": "dependabot",
+      "state": "open",
+      "additions": 9,
+      "deletions": 150,
+      "labels": [
+        "dependencies"
+      ],
+      "updated_at": "2026-10-17T13:03:00Z",
+      "url": "https://github.com/example/shop/pull/404"
+    },
+    {
+      "number": 403,
+      "title": "Add retry with exponential backoff to the webhook delivery worker",
+      "author": "fatima",
+      "state": "open",
+      "additions": 1204,
+      "deletions": 150,
+      "labels": [
+        "dependencies",
+        "enhancement"
+      ],
+      "updated_at": "2026-10-18T10:27:00Z",
+      "url": "https://github.com/example/shop/pull/403"
+    },
+    {
+      "number": 402,
+      "title": "Docs: typo in README",
+      "author": "jordan",
+      "state": "open",
+      "additions": 1208,
+      "deletions": 4,
+      "labels": [
+        "docs",
+        "enhancement"
+      ],
+      "updated_at": "2026-10-02T00:40:00Z",
+      "url": "https://github.com/example/shop/pull/402"
+    },
+    {
+      "number": 397,
+      "title": "Refactor session store to use atomic rename instead of in-place writes",
+      "author": "mei",
+      "state": "open",
+      "additions": 313,
+      "deletions": 4,
+      "labels": [],
+      "updated_at": "2026-10-19T02:58:00Z",
+      "url": "https://github.com/example/shop/pull/397"
+    },
+    {
+      "number": 393,
+      "title": "Remove dead feature flag",
+      "author": "fatima",
+      "state": "open",
+      "additions": 30,
+      "deletions": 9,
+      "labels": [
+        "breaking",
+        "performance"
+      ],
+      "updated_at": "2026-10-17T09:18:00Z",
+      "url": "https://github.com/example/shop/pull/393"
+    },
+    {
+      "number": 392,
+      "title": "Speed up CSV export for large tables by streaming rows",
+      "author": "alex",
+      "state": "draft",
+      "additions": 36,
+      "deletions": 1,
+      "labels": [
+        "breaking",
+        "performance"
+      ],
+      "updated_at": "2026-10-05T04:45:00Z",
+      "url": "https://github.com/example/shop/pull/392"
+    },
+    {
+      "number": 388,
+      "title": "Handle empty response from billing API",
+      "author": "jordan",
+      "state": "open",
+      "additions": 88,
+      "deletions": null,
+      "labels": [
+        "breaking"
+      ],
+      "updated_at": "2026-10-02T10:02:00Z",
+      "url": "https://github.com/example/shop/pull/388"
+    },
+    {
+      "number": 385,
+      "title": "Add dark mode toggle",
+      "author": "chris",
+      "state": "open",
+      "additions": 4,
+      "deletions": 23,
+      "labels": [
+        "breaking",
+        "good first issue"
+      ],
+      "updated_at": "2026-10-25T12:56:00Z",
+      "url": "https://github.com/example/shop/pull/385"
+    },
+    {
+      "number": 384,
+      "title": "Migrate CI from Travis to GitHub Actions and cache cargo registry",
+      "author": "alex",
+      "state": "draft",
+      "additions": 93,
+      "deletions": 3,
+      "labels": [
+        "breaking",
+        "performance",
+        "security"
+      ],
+      "updated_at": "2026-10-12T07:40:00Z",
+      "url": "https://github.com/example/shop/pull/384"
+    },
+    {
+      "number": 382,
+      "title": "Fix flaky test in auth middleware",
+      "author": "priya",
+      "state": "open",
+      "additions": 16,
+      "deletions": 9,
+      "labels": [],
+      "updated_at": "2026-10-17T05:28:00Z",
+      "url": "https://github.com/example/shop/pull/382"
+    },
+    {
+      "number": 378,
+      "title": "Support unicode in usernames",
+      "author": "fatima",
+      "state": "open",
+      "additions": 15,
+      "deletions": 154,
+      "labels": [],
+      "updated_at": "2026-10-15T20:27:00Z",
+      "url": "https://github.com/example/shop/pull/378"
+    },
+    {
+      "number": 376,
+      "title": "Pin node version",
+      "author": "fatima",
+      "state": "draft",
+      "additions": 51,
+      "deletions": 10,
+      "labels": [
+        "ci"
+      ],
+      "updated_at": "2026-10-24T17:17:00Z",
+      "url": "https://github.com/example/shop/pull/376"
+    },
+    {
+      "number": 374,
+      "title": "Rate limit password reset endpoint to prevent abuse",
+      "author": "jordan",
+      "state": "open",
+      "additions": 1206,
+      "deletions": 22,
+      "labels": [
+        "bug",
+        "dependencies",
+        "good first issue"
+      ],
+      "updated_at": "2026-10-28T07:27:00Z",
+      "url": "https://github.com/example/shop/pull/374"
+    },
+    {
+      "number": 372,
+      "title": "Add pagination to /v2/orders",
+      "author": "fatima",
+      "state": "draft",
+      "additions": 16,
+      "deletions": 3,
+      "labels": [
+        "performance"
+      ],
+      "updated_at": "2026-10-03T01:03:00Z",
+      "url": "https://github.com/example/shop/pull/372"
+    },
+    {
+      "number": 368,
+      "title": "Log request IDs in error responses",
+      "author": "fatima",
+      "state": "open",
+      "additions": 88,
+      "deletions": 9,
+      "labels": [
+        "breaking",
+        "enhancement"
+      ],
+      "updated_at": "2026-10-18T23:54:00Z",
+      "url": "https://github.com/example/shop/pull/368"
+    },
+    {
+      "number": 364,
+      "title": "Upgrade ratatui and adapt to the new layout constraint API",
+      "author": "jordan",
+      "state": "open",
+      "additions": 3,
+      "deletions": 8,
+      "labels": [
+        "bug"
+      ],
+      "updated_at": "2026-10-23T21:06:00Z",
+      "url": "https://github.com/example/shop/pull/364"
+    },
+    {
+      "number": 361,
+      "title": "Fix off-by-one in date range filter",
+      "author": "sam",
+      "state": "open",
+      "additions": 12,
+      "deletions": 65,
+      "labels": [
+        "ci"
+      ],
+      "updated_at": "2026-10-11T22:10:00Z",
+      "url": "https://github.com/example/shop/pull/361"
+    },
+    {
+      "number": 357,
+      "title": "Add healthcheck endpoint",
+      "author": "priya",
+      "state": "open",
+      "additions": 144,
+      "deletions": 2,
+      "labels": [
+        "breaking",
+        "good first issue"
+      ],
+      "updated_at": "2026-10-23T20:19:00Z",
+      "url": "https://github.com/example/shop/pull/357"
+    },
+    {
+      "number": 351,
+      "title": "Drop Python 3.8 support",
+      "author": "chris",
+      "state": "open",
+      "additions": 20,
+      "deletions": 62,
+      "labels": [
+        "bug",
+        "docs"
+      ],
+      "updated_at": "2026-10-03T18:38:00Z",
+      "url": "https://github.com/example/shop/pull/351"
+    },
+    {
+      "number": 350,
+      "title": "Show a friendly error when the config file has invalid TOML",
+      "author": "alex",
+      "state": "open",
+      "additions": 48,
+      "deletions": 66,
+      "labels": [
+        "enhancement",
+        "performance",
+        "security"
+      ],
+      "updated_at": "2026-10-18T08:18:00Z",
+      "url": "https://github.com/example/shop/pull/350"
+    },
+    {
+      "number": 345,
+      "title": "Cache avatar images",
+      "author": "mei",
+      "state": "open",
+      "additions": 319,
+      "deletions": 66,
+      "labels": [
+        "dependencies",
+        "good first issue"
+      ],
+      "updated_at": "2026-10-27T04:16:00Z",
+      "url": "https://github.com/example/shop/pull/345"
+    },
+    {
+      "number": 344,
+      "title": "Fix memory leak in websocket reconnect loop",
+      "author": "alex",
+      "state": "open",
+      "additions": 1209,
+      "deletions": 875,
+      "labels": [
+        "dependencies"
+      ],
+      "updated_at": null,
+      "url": "https://github.com/example/shop/pull/344"
+    },
+    {
+      "number": 341,
+      "title": "Add --dry-run to migrate command",
+      "author": "priya",
+      "state": "open",
+      "additions": 19,
+      "deletions": 11,
+      "labels": [],
+      "updated_at": "2026-10-19T04:42:00Z",
+      "url": "https://github.com/example/shop/pull/341"
+    },
+    {
+      "number": 337,
+      "title": "Use structured logging everywhere",
+      "author": "sam",
+      "state": "open",
+      "additions": 9,
+      "deletions": 12,
+      "labels": [
+        "ci",
+        "enhancement",
+        "performance"
+      ],
+      "updated_at": "2026-10-20T08:56:00Z",
+      "url": "https://github.com/example/shop/pull/337"
+    },
+    {
+      "number": 333,
+      "title": "Make search case-insensitive by default and add a --case-sensitive flag",
+      "author": "chris",
+      "state": "open",
+      "additions": 5,
+      "deletions": 5,
+      "labels": [
+        "breaking",
+        "ci",
+        "dependencies"
+      ],
+      "updated_at": "2026-10-27T05:50:00Z",
+      "url": "https://github.com/example/shop/pull/333"
+    },
+    {
+      "number": 331,
+      "title": "Fix timezone handling in scheduled reports",
+      "author": "luis",
+      "state": "open",
+      "additions": 16,
+      "deletions": 4,
+      "labels": [
+        "breaking",
+        "performance"
+      ],
+      "updated_at": "2026-10-27T20:22:00Z",
+      "url": "https://github.com/example/shop/pull/331"
+    },
+    {
+      "number": 325,
+      "title": "Add Spanish translations",
+      "author": "priya",
+      "state": "draft",
+      "additions": 15,
+      "deletions": 2,
+      "labels": [
+        "breaking",
+        "ci",
+        "docs"
+      ],
+      "updated_at": "2026-10-18T19:31:00Z",
+      "url": "https://github.com/example/shop/pull/325"
+    },
+    {
+      "number": 322,
+      "title": "Tighten CSP headers",
+      "author": "mei",
+      "state": "draft",
+      "additions": 318,
+      "deletions": 4,
+      "labels": [
+        "security"
+      ],
+      "updated_at": "2026-10-12T09:30:00Z",
+      "url": "https://github.com/example/shop/pull/322"
+    },
+    {
+      "number": 318,
+      "title": "Delete unused images",
+      "author": "fatima",
+      "state": "draft",
+      "additions": 16,
+      "deletions": 3,
+      "labels": [
+        "good first issue"
+      ],
+      "updated_at": "2026-10-20T03:55:00Z",
+      "url": "https://github.com/example/shop/pull/318"
+    },
+    {
+      "number": 313,
+      "title": "Batch database writes in import job to cut runtime from 40m to 6m",
+      "author": "sam",
+      "state": "open",
+      "additions": 149,
+      "deletions": 5,
+      "labels": [
+        "docs"
+      ],
+      "updated_at": "2026-10-25T16:28:00Z",
+      "url": "https://github.com/example/shop/pull/313"
+    },
+    {
+      "number": 310,
+      "title": "Fix broken link in footer",
+      "author": "luis",
+      "state": "open",
+      "additions": 16,
+      "deletions": 0,
+      "labels": [
+        "bug",
+        "dependencies"
+      ],
+      "updated_at": "2026-10-05T09:22:00Z",
+      "url": "https://github.com/example/shop/pull/310"
+    },
+    {
+      "number": 306,
+      "title": "Add metrics for queue depth",
+      "author": "sam",
+      "state": "open",
+      "additions": 34,
+      "deletions": 874,
+      "labels": [
+        "dependencies",
+        "performance"
+      ],
+      "updated_at": "2026-10-17T05:25:00Z",
+      "url": "https://github.com/example/shop/pull/306"
+    },
+    {
+      "number": 300,
+      "title": "Validate email addresses on signup",
+      "author": "alex",
+      "state": "draft",
+      "additions": 14,
+      "deletions": 4,
+      "labels": [
+        "breaking"
+      ],
+      "updated_at": "2026-10-08T09:01:00Z",
+      "url": "https://github.com/example/shop/pull/300"
+    },
+    {
+      "number": 297,
+      "title": "WIP: new onboarding flow",
+      "author": "priya",
+      "state": "draft",
+      "additions": 16,
+      "deletions": 2,
+      "labels": null,
+      "updated_at": "2026-09-29T05:06:00Z",
+      "url": "https://github.com/example/shop/pull/297"
+    },
+    {
+      "number": 291,
+      "title": "Revert \"Use structured logging everywhere\"",
+      "author": "chris",
+      "state": "open",
+      "additions": 143,
+      "deletions": 4,
+      "labels": [
+        "docs"
+      ],
+      "updated_at": "2026-10-06T07:42:00Z",
+      "url": "https://github.com/example/shop/pull/291"
+    },
+    {
+      "number": 289,
+      "title": "Fix race between cache invalidation and read-through on cold start",
+      "author": "mei",
+      "state": "open",
+      "additions": 91,
+      "deletions": 63,
+      "labels": [
+        "ci",
+        "docs",
+        "good first issue"
+      ],
+      "updated_at": "2026-10-24T07:13:00Z",
+      "url": "https://github.com/example/shop/pull/289"
+    },
+    {
+      "number": 283,
+      "title": "Add keyboard shortcuts help overlay",
+      "author": "chris",
+      "state": "open",
+      "additions": 147,
+      "deletions": 3,
+      "labels": [
+        "good first issue"
+      ],
+      "updated_at": "2026-10-13T09:50:00Z",
+      "url": "https://github.com/example/shop/pull/283"
+    },
+    {
+      "number": 278,
+      "title": "Upgrade OpenSSL",
+      "author": "dependabot",
+      "state": "draft",
+      "additions": 4,
+      "deletions": 9,
+      "labels": [
+        "dependencies"
+      ],
+      "updated_at": "2026-10-24T16:06:00Z",
+      "url": "https://github.com/example/shop/pull/278"
+    },
+    {
+      "number": 275,
+      "title": "Improve error message when a required environment variable is missing",
+      "author": "alex",
+      "state": "open",
+      "additions": 14,
+      "deletions": 23,
+      "labels": [
+        "security"
+      ],
+      "updated_at": "2026-10-21T16:47:00Z",
+      "url": "https://github.com/example/shop/pull/275"
+    }
+  ]
+}
