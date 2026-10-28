@@ -47,7 +47,7 @@ Render needs to tell `App` how many rows fit so page-down and scroll-into-view w
 ### Scroll rules (`App::scroll_into_view`)
 
 - Vertical: if `cursor.row < first_row`, `first_row = cursor.row`. If `cursor.row >= first_row + body_height`, `first_row = cursor.row - body_height + 1`.
-- Horizontal: if the cursor is on the pinned column, no change. Otherwise, if `cursor.col < first_col`, `first_col = cursor.col`. If `cursor.col` is not in `layout::visible_columns(...).scrolled`, increment `first_col` until it is. Loop terminates because a single column always fits (clipped) when it is first.
+- Horizontal: if the cursor is on the pinned column, no change. Otherwise, if `cursor.col < first_col`, `first_col = cursor.col`. If `layout::visible_columns(...)` does not contain `cursor.col`, increment `first_col` until it does. Loop terminates because a single column always fits (clipped) when it is first.
 - Clamp cursor to table bounds on every move. Empty table: cursor stays at (0,0), moves are no-ops.
 
 ### Tests
