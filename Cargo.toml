@@ -5,23 +5,29 @@ edition = "2024"
 description = "A terminal table viewer you share with an agent"
 license = "MIT"
 
+# Keep this list short: every crate (and everything it pulls in) is code we
+# download and, for build scripts and proc macros, run at compile time. Prefer
+# std or a few lines of our own code, and turn off default features we don't use.
+# See "Dependencies" in README.md.
 [dependencies]
 anyhow = "1.0.104"
-chrono = "0.4.45"
-clap = { version = "4.6.7", features = ["derive"] }
-dirs = "7.0.0"
-rand = "0.10.3"
+# Default features minus `color` and `suggestions`, which pull in extra crates.
+clap = { version = "4.6.7", default-features = false, features = [
+    "std",
+    "derive",
+    "help",
+    "usage",
+    "error-context",
+] }
 # ratatui re-exports crossterm as `ratatui::crossterm`, so we use that instead of
 # depending on crossterm directly. This keeps the two versions in lockstep.
-ratatui = "0.30.2"
+# Only the crossterm backend; the defaults add widgets and macros we don't use.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 unicode-width = "0.2.3"
 
 [dev-dependencies]
-assert_cmd = "2.2.2"
-insta = { version = "1.49.0", features = ["json"] }
-predicates = "3.1.4"
 tempfile = "3.27.0"
 
 # Clippy is Rust's linter. Groups get priority -1 so the individual `allow`s
