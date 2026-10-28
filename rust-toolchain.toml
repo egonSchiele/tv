@@ -1,0 +1,5 @@
+# Pins the toolchain for this repo. rustup reads this and installs the listed
+# channel and components automatically when you run cargo here.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
