@@ -85,6 +85,15 @@ impl Table {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         Table::parse(&text).with_context(|| format!("parsing {}", path.display()))
     }
+
+    pub fn cell(&self, row: usize, column: &str) -> Option<&Value> {
+        self.rows.get(row)?.get(column)
+    }
+
+    pub fn key_column_index(&self) -> Option<usize> {
+        let key = self.key.as_deref()?;
+        self.columns.iter().position(|column| column.name == key)
+    }
 }
 
 impl TryFrom<RawTable> for Table {
@@ -287,6 +296,14 @@ mod tests {
     fn rows_are_required() {
         let message = error_message(r#"{"title": "no rows field"}"#);
         assert!(message.contains("missing field `rows`"), "{message}");
+    }
+
+    #[test]
+    fn key_column_index_finds_the_key() {
+        let table = Table::parse(r#"{"key": "id", "rows": [{"name": "a", "id": 1}]}"#).unwrap();
+        assert_eq!(table.key_column_index(), Some(1));
+        let no_key = Table::parse(r#"[{"id": 1}]"#).unwrap();
+        assert_eq!(no_key.key_column_index(), None);
     }
 
     #[test]

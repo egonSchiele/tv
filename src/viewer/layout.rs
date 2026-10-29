@@ -54,33 +54,57 @@ pub fn column_span(width: u16) -> u16 {
         .saturating_add(SEPARATOR_WIDTH)
 }
 
-/// Column indices to draw, left to right: the pinned column (if any), then the
+/// A column to draw and the width to draw it at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisibleColumn {
+    pub index: usize,
+    pub width: u16,
+}
+
+/// Columns to draw, left to right: the pinned column (if any), then the
 /// non-pinned columns from `first_col` on that fully fit in `total_width`.
 ///
-/// One exception: the first non-pinned column is always included, even if it
-/// doesn't fit (render clips it). That way every column can be scrolled into
-/// view, however narrow the terminal.
+/// One exception: the pinned column and the first non-pinned column are always
+/// included. If one doesn't fit, it is narrowed to the space left, so its text
+/// is truncated with `…` (or clipped, if no space is left). That way every
+/// column can be scrolled into view, however narrow the terminal.
+///
+/// The last column's separator may land just past `total_width`, where the
+/// grid's right border is. Render clips it and the border draws the same line.
 pub fn visible_columns(
     widths: &[u16],
     pinned: Option<usize>,
     first_col: usize,
     total_width: u16,
-) -> Vec<usize> {
-    let mut visible: Vec<usize> = pinned.into_iter().collect();
-    let mut used: u32 = visible
-        .iter()
-        .map(|&column| u32::from(column_span(widths[column])))
-        .sum();
-    let scrolled = (first_col..widths.len()).filter(|&column| Some(column) != pinned);
-    for (position, column) in scrolled.enumerate() {
-        let span = u32::from(column_span(widths[column]));
-        if position > 0 && used + span > u32::from(total_width) {
+) -> Vec<VisibleColumn> {
+    let budget = u32::from(total_width) + u32::from(SEPARATOR_WIDTH);
+    let always_shown = 1 + usize::from(pinned.is_some());
+    let scrolled = (first_col..widths.len()).filter(|&index| Some(index) != pinned);
+    let mut visible = Vec::new();
+    let mut used: u32 = 0;
+    for (position, index) in pinned.into_iter().chain(scrolled).enumerate() {
+        let remaining = budget.saturating_sub(used);
+        let fits = u32::from(column_span(widths[index])) <= remaining;
+        if !fits && position >= always_shown {
             break;
         }
-        used += span;
-        visible.push(column);
+        let width = if fits {
+            widths[index]
+        } else {
+            width_within(remaining)
+        };
+        used += u32::from(column_span(width));
+        visible.push(VisibleColumn { index, width });
     }
     visible
+}
+
+/// The widest column whose span fits in `space`, but at least 1.
+fn width_within(space: u32) -> u16 {
+    let overhead = u32::from(column_span(0));
+    u16::try_from(space.saturating_sub(overhead))
+        .unwrap_or(u16::MAX)
+        .max(1)
 }
 
 /// Make `text` exactly `width` display cells: truncate with `…` if it's too
@@ -204,20 +228,45 @@ mod tests {
         assert_eq!(column_span(5), 8);
     }
 
+    /// Shorthand for expected results: `(index, width)` pairs.
+    fn columns(pairs: &[(usize, u16)]) -> Vec<VisibleColumn> {
+        pairs
+            .iter()
+            .map(|&(index, width)| VisibleColumn { index, width })
+            .collect()
+    }
+
     #[test]
     fn visible_columns_without_pin_stop_before_a_partial_column() {
-        // Spans are 8 each.
-        assert_eq!(visible_columns(&[5, 5, 5], None, 0, 20), [0, 1]);
-        assert_eq!(visible_columns(&[5, 5, 5], None, 0, 24), [0, 1, 2]);
-        assert_eq!(visible_columns(&[5, 5, 5], None, 1, 24), [1, 2]);
+        // Spans are 8 each. The budget is the width plus 1, because the last
+        // separator can sit on the border.
+        let widths = [5, 5, 5];
+        assert_eq!(
+            visible_columns(&widths, None, 0, 20),
+            columns(&[(0, 5), (1, 5)])
+        );
+        assert_eq!(
+            visible_columns(&widths, None, 0, 24),
+            columns(&[(0, 5), (1, 5), (2, 5)])
+        );
+        assert_eq!(
+            visible_columns(&widths, None, 1, 24),
+            columns(&[(1, 5), (2, 5)])
+        );
     }
 
     #[test]
     fn visible_columns_put_the_pinned_column_first() {
         // Spans: 9, 13, 13, 13.
         let widths = [6, 10, 10, 10];
-        assert_eq!(visible_columns(&widths, Some(0), 2, 40), [0, 2, 3]);
-        assert_eq!(visible_columns(&widths, Some(2), 0, 40), [2, 0, 1]);
+        assert_eq!(
+            visible_columns(&widths, Some(0), 2, 40),
+            columns(&[(0, 6), (2, 10), (3, 10)])
+        );
+        assert_eq!(
+            visible_columns(&widths, Some(2), 0, 40),
+            columns(&[(2, 10), (0, 6), (1, 10)])
+        );
     }
 
     #[test]
@@ -230,9 +279,23 @@ mod tests {
     }
 
     #[test]
-    fn visible_columns_always_include_the_first_scrolled_column() {
-        // Spans: 9, 43. Only 30 cells, but column 1 must still be reachable.
-        assert_eq!(visible_columns(&[6, 40, 5], Some(0), 1, 30), [0, 1]);
-        assert_eq!(visible_columns(&[40, 5], None, 0, 10), [0]);
+    fn visible_columns_narrow_the_first_scrolled_column_to_fit() {
+        // Budget 31; pinned span 9 leaves 22; minus padding and separator, 19.
+        assert_eq!(
+            visible_columns(&[6, 40, 5], Some(0), 1, 30),
+            columns(&[(0, 6), (1, 19)])
+        );
+        assert_eq!(visible_columns(&[40, 5], None, 0, 10), columns(&[(0, 8)]));
+    }
+
+    #[test]
+    fn visible_columns_keep_both_shown_columns_with_no_space_left() {
+        // The pinned column is narrowed to fill the screen; the first scrolled
+        // column still comes back (at width 1, off screen) so scrolling can
+        // find it.
+        assert_eq!(
+            visible_columns(&[40, 5], Some(0), 1, 10),
+            columns(&[(0, 8), (1, 1)])
+        );
     }
 }

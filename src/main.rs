@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 
+#[cfg(test)]
+mod snapshot;
 mod table;
-// Temporary: nothing calls the viewer until the render commit.
-#[allow(dead_code)]
 mod viewer;
 
 use table::Table;
@@ -29,12 +29,9 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Open { path } => {
+            // Parse first, so a bad file errors out before the screen changes.
             let table = Table::from_path(&path)?;
-            println!(
-                "would open {path}: {} rows, {} columns",
-                table.rows.len(),
-                table.columns.len()
-            );
+            viewer::run(table)?;
         }
     }
     Ok(())
