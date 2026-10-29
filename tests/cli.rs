@@ -899,3 +899,82 @@ fn rm_removes_a_session_with_a_pending_goto() {
     succeeds(&tv(home.path(), &["rm", "abc123"], ""));
     assert!(!dir.exists());
 }
+
+/// Append one line to session directory `dir`'s comment log, the way another
+/// writer would. `write_comments` replaces the whole log.
+fn append_comment(dir: &Path, line: &str) {
+    let mut log = fs::OpenOptions::new()
+        .append(true)
+        .open(dir.join("comments.jsonl"))
+        .unwrap();
+    writeln!(log, "{line}").unwrap();
+}
+
+/// ADI-229's round trip, in the order an agent and a user would go. The
+/// duplicate-key push is `agent_push_keeps_the_key_and_title`, and focus with
+/// no viewer is `agent_focus_without_a_viewer_is_all_nulls`.
+#[test]
+fn agent_round_trip() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+
+    // 1. A session from piped rows.
+    let id = new_session(home);
+    let dir = session_dir(home, &id);
+
+    // 2. A push: 409 gone, 404 retitled.
+    let mut rows = example_rows();
+    rows[1]["title"] = "Bump serde".into();
+    rows.as_array_mut().unwrap().remove(0);
+    agent(home, &["push", &id], &rows.to_string());
+    let table = agent(home, &["get", &id], "");
+    assert_eq!(table["rows"].as_array().unwrap().len(), 39);
+    assert_eq!(table["rows"][0]["title"], "Bump serde");
+    assert_eq!(table["key"], "number");
+
+    // 3. Nobody has opened it.
+    let focus = agent(home, &["focus", &id], "");
+    assert_eq!(focus["row_id"], Value::Null);
+
+    // 4. The agent points at a cell.
+    let started = agent(
+        home,
+        &["comment", &id, "--row", "404", "--col", "title", "retitled"],
+        "",
+    );
+    let thread = started["id"].as_str().unwrap();
+    let all = agent(home, &["comments", &id, "--all"], "");
+    assert_eq!(all.as_array().unwrap().len(), 1);
+    assert_eq!(all[0]["value"], "Bump serde");
+    assert_eq!(all[0]["awaiting_reply"], false);
+
+    // 5. The user answers in the viewer, which appends to the log.
+    append_comment(
+        &dir,
+        &format!(
+            r#"{{"op":"add","id":"cuser1","author":"user","reply_to":"{thread}","text":"why?","ts":"2026-10-29T10:00:00Z"}}"#
+        ),
+    );
+    let awaiting = agent(home, &["comments", &id], "");
+    assert_eq!(awaiting[0]["id"], thread);
+
+    // 6. The agent replies.
+    agent(home, &["reply", &id, thread, "to match the issue"], "");
+    assert_eq!(agent(home, &["comments", &id], ""), serde_json::json!([]));
+    let all = agent(home, &["comments", &id, "--all"], "");
+    let authors: Vec<&str> = all[0]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["author"].as_str().unwrap())
+        .collect();
+    assert_eq!(authors, ["agent", "user", "agent"]);
+
+    // 7. Saved, and opened again as a new session: the same table and threads.
+    let out = home.join("out.json");
+    succeeds(&tv(home, &["save", &id, out.to_str().unwrap()], ""));
+    let reopened = agent(home, &["new", out.to_str().unwrap()], "");
+    let reopened = reopened["session"].as_str().unwrap();
+    assert_eq!(agent(home, &["get", reopened], ""), table);
+    assert_eq!(agent(home, &["comments", reopened, "--all"], ""), all);
+}
