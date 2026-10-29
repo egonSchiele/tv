@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use super::app::App;
 use super::layout::{self, Align, VisibleColumn};
-use crate::table::{ColumnType, cell_text};
+use crate::table::{ColumnType, cell_text, single_line};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
@@ -17,6 +17,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let mut block = Block::bordered();
     if let Some(title) = &table.title {
+        let title = single_line(title);
         block = block.title_top(Line::from(format!(" {title} ")).left_aligned());
     }
     if let Some(session_id) = &app.session_id {
@@ -58,7 +59,7 @@ fn header_line(app: &App, visible: &[VisibleColumn]) -> Line<'static> {
     let columns = &app.table().columns;
     let bold = Style::new().add_modifier(Modifier::BOLD);
     grid_line(visible, |col| {
-        (columns[col].name.clone(), align(columns[col].kind), bold)
+        (columns[col].display_name(), align(columns[col].kind), bold)
     })
 }
 
@@ -202,6 +203,17 @@ mod tests {
             r#"{"title": "Empty", "columns": [{"name": "id"}, {"name": "title"}], "rows": []}"#,
         );
         assert_snapshot("empty", &render_text(&app, 30, 6));
+    }
+
+    #[test]
+    fn title_and_headers_show_newlines_like_cells() {
+        let app = app(
+            r#"{"title": "two\nlines", "columns": [{"name": "a\nb"}], "rows": [{"a\nb": "c\nd"}]}"#,
+        );
+        let text = render_text(&app, 30, 6);
+        assert!(text.contains(" two↵lines "), "{text}");
+        assert!(text.contains("│ a↵b │"), "{text}");
+        assert!(text.contains("│ c↵d │"), "{text}");
     }
 
     #[test]

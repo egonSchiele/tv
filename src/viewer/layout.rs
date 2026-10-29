@@ -1,7 +1,7 @@
 //! Column geometry: widths, which columns fit on screen, and sizing cell text.
 //! Pure functions over numbers and strings, so they're easy to unit test.
 
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::table::{Table, cell_text};
 
@@ -40,7 +40,10 @@ pub fn column_widths(table: &Table) -> Vec<u16> {
                 .max()
                 .unwrap_or(0);
             let cap = column.width.unwrap_or(DEFAULT_WIDTH_CAP);
-            widest_cell.max(display_width(&column.name)).min(cap).max(1)
+            widest_cell
+                .max(display_width(&column.display_name()))
+                .min(cap)
+                .max(1)
         })
         .collect()
 }
@@ -126,20 +129,22 @@ pub fn fit(text: &str, width: u16, align: Align) -> String {
 
 /// Cut `text` to fit in `width - 1` cells and add `…`. A wide character that
 /// would straddle the limit is dropped whole; `fit` pads the gap.
+///
+/// Measures the whole string as it grows rather than adding up character
+/// widths: they disagree for sequences like `❤️` (U+2764 + U+FE0F), which is 2
+/// cells as a string but 1 + 0 as characters.
 fn truncate(text: &str, width: usize) -> String {
     if width == 0 {
         return String::new();
     }
     let budget = width - 1;
-    let mut used = 0;
     let mut truncated = String::new();
     for character in text.chars() {
-        let character_width = character.width().unwrap_or(0);
-        if used + character_width > budget {
+        truncated.push(character);
+        if truncated.width() > budget {
+            truncated.pop();
             break;
         }
-        used += character_width;
-        truncated.push(character);
     }
     truncated.push(ELLIPSIS);
     truncated
@@ -194,6 +199,15 @@ mod tests {
     }
 
     #[test]
+    fn widths_measure_the_displayed_header() {
+        // `a\nb` displays as `a↵b`, 3 cells.
+        assert_eq!(
+            widths_of(r#"{"columns": [{"name": "a\nb"}], "rows": []}"#),
+            [3]
+        );
+    }
+
+    #[test]
     fn display_width_counts_wide_characters() {
         assert_eq!(display_width("abc"), 3);
         assert_eq!(display_width("日本語"), 6);
@@ -221,6 +235,9 @@ mod tests {
         assert_eq!(fit("日本語", 4, Left), "日… ");
         assert_eq!(fit("日本語", 4, Right), " 日…");
         assert_eq!(display_width(&fit("🦀🦀🦀", 4, Left)), 4);
+        // A variation selector makes ❤️ 2 cells wide, though its characters are 1 + 0.
+        assert_eq!(display_width(&fit("❤️❤️❤️❤️", 4, Left)), 4);
+        assert_eq!(display_width(&fit("❤️❤️❤️❤️", 5, Left)), 5);
     }
 
     #[test]

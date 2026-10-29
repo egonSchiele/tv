@@ -66,6 +66,13 @@ pub enum ColumnType {
     Bool,
 }
 
+impl Column {
+    /// The column name as the header shows it (one line, like cell text).
+    pub fn display_name(&self) -> String {
+        single_line(&self.name)
+    }
+}
+
 impl Table {
     /// Parse a table from JSON text, accepting either the full format or a bare
     /// array of row objects.
@@ -193,7 +200,7 @@ pub fn cell_text(value: Option<&Value>) -> String {
 
 /// Newlines become `↵`. Other control characters (tabs, carriage returns)
 /// become spaces, since the terminal would otherwise move the cursor.
-fn single_line(text: &str) -> String {
+pub fn single_line(text: &str) -> String {
     text.chars()
         .map(|character| match character {
             '\n' => '↵',
