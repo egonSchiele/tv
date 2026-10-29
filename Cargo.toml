@@ -28,6 +28,13 @@ serde = { version = "1.0.229", features = ["derive"] }
 # first-seen order). It adds one crate, indexmap; its own deps are already here.
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 unicode-width = "0.2.3"
+# Only for its `use-dev-tty` feature; code uses `ratatui::crossterm`. When stdin
+# is a pipe (`cat file | tv -`), crossterm reads keys from /dev/tty, and its
+# default (mio) reader can't watch /dev/tty on macOS: kqueue doesn't support
+# it, and the viewer fails with "Failed to initialize input reader". This
+# feature swaps in a poll-based reader. It adds three crates: filedescriptor
+# and an older thiserror (with its macro crate).
+crossterm = { version = "0.29.0", default-features = false, features = ["use-dev-tty"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
