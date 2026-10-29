@@ -1,5 +1,9 @@
 use clap::{Parser, Subcommand};
 
+mod table;
+
+use table::Table;
+
 /// A terminal table viewer you share with an agent.
 // `derive(Parser)` generates the argument parser from this struct's fields and
 // doc comments, so `tv --help` text comes from the `///` comments.
@@ -16,14 +20,21 @@ enum Command {
     Open { path: String },
 }
 
-// Placeholder. Once opening a file can fail, change this to return
-// `anyhow::Result<()>` so errors can bubble up with `?`. (Clippy's
-// `unnecessary_wraps` rejects a `Result` that can never be `Err`.)
-fn main() {
+// `anyhow::Result` lets any error type bubble up with `?`. Returning `Err` from
+// `main` prints `Error: …` to stderr and exits with status 1.
+fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Open { path } => println!("would open {path}"),
+        Command::Open { path } => {
+            let table = Table::from_path(&path)?;
+            println!(
+                "would open {path}: {} rows, {} columns",
+                table.rows.len(),
+                table.columns.len()
+            );
+        }
     }
+    Ok(())
 }
 
 // `#[cfg(test)]` compiles this module only for `cargo test`.
