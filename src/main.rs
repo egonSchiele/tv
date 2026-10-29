@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand};
 
 mod table;
+// Temporary: nothing calls the viewer until the render commit.
+#[allow(dead_code)]
+mod viewer;
 
 use table::Table;
 
