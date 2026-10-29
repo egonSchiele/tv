@@ -3,9 +3,9 @@
 "│    40┌ title · number 404 ──────────────────────────────────┐      │"
 "│    40│Bump serde to 1.0.229                                 │      │"
 "│    40│                                                      │      │"
-"│    40│                                                      │      │"
-"│    39│Comments  ·  c reply  ·  d delete                     │      │"
+"│    40│Comments  ·  c reply  ·  d delete                     │      │"
 "│    39│user  Why is this still open?                         │      │"
+"│    39│                                                      │      │"
 "│    39│                                                      │      │"
 "├──────└──────────────────────────────────────────────────────┘──────┤"
 "│ delete this cell's comments? y/n                                   │"
@@ -13,5 +13,5 @@
 --- styles
 row 1: 1..9 BOLD, 10..62 BOLD
 row 3: 1..7 fg=Indexed(252) bg=Indexed(236)
-row 6: 8..16 BOLD
-row 7: 8..14 BOLD
+row 5: 8..16 BOLD
+row 6: 8..14 BOLD

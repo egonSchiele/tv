@@ -409,19 +409,31 @@ fn draw_detail(frame: &mut Frame, app: &App, screen: Rect) {
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
 
-    // Without threads the comments take two lines; with them, the value and
-    // the comments split the popup. A thread longer than its half is cut off.
+    // Without threads the comments take two lines. With them, the value and
+    // the comments share the popup in proportion to the rows each wraps to,
+    // so a short thread leaves a long value room. The counts assume wrapping
+    // at any character; wrapping at words can need a row more, which matters
+    // only when the popup is nearly full.
     let threads = app.cell_threads();
+    let comments = comment_lines(&threads);
+    let width = usize::from(inner.width.max(1));
+    let share = |lines: &[Line]| {
+        let rows: usize = lines
+            .iter()
+            .map(|line| line.width().div_ceil(width).max(1))
+            .sum();
+        Constraint::Fill(u16::try_from(rows).unwrap_or(u16::MAX))
+    };
     let comments_height = if threads.is_empty() {
         Constraint::Length(2)
     } else {
-        Constraint::Fill(1)
+        share(&comments)
     };
     let [value_area, comments_area] =
-        Layout::vertical([Constraint::Fill(1), comments_height]).areas(inner);
+        Layout::vertical([share(&value.lines), comments_height]).areas(inner);
     frame.render_widget(Paragraph::new(value).wrap(Wrap { trim: false }), value_area);
     frame.render_widget(
-        Paragraph::new(comment_lines(&threads)).wrap(Wrap { trim: false }),
+        Paragraph::new(comments).wrap(Wrap { trim: false }),
         comments_area,
     );
 }
@@ -941,5 +953,19 @@ mod tests {
         app.set_table(Table::parse("[{}]").unwrap(), Instant::now());
         render(&mut app, 60, 10);
         assert_eq!(app.mode, Mode::Grid);
+    }
+
+    #[test]
+    fn a_short_thread_leaves_the_value_room() {
+        let body: Vec<String> = (1..=12).map(|n| format!("line {n}")).collect();
+        let json = serde_json::json!({"key": "id", "rows": [{"id": "a", "body": body.join("\n")}]});
+        let mut app = app(&json.to_string());
+        let log = r#"{"op":"add","id":"c1","author":"user","row_id":"a","column":"body","text":"why?","ts":"t"}"#;
+        app.set_events(comments::parse_log(log).events);
+        app.cursor = Cursor { row: 0, col: 1 };
+        press_keys(&mut app, [KeyCode::Enter]);
+        let screen = render_text(&mut app, 80, 24);
+        assert!(screen.contains("user  why?"), "{screen}");
+        assert!(screen.contains("line 10"), "{screen}");
     }
 }

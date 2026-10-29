@@ -483,7 +483,7 @@ fn refold(&mut self);
 
 `set_table` calls `refold()` after it replaces the table. Folding is pure, so `App` stays all state and no IO, and it can't hold threads that are stale for its table.
 
-**`SessionSync`** gets `comments_seen: Option<Fingerprint>`, which `start` sets to `None`, and a twin of `changed_table`:
+**`SessionSync`** gets `comments_seen: Option<Fingerprint>` and `warned: Option<String>`, which `start` sets to `None`, and a twin of `changed_table`:
 
 ```rust
 /// The log if `comments.jsonl` changed since the last look, `None` if not.
@@ -528,8 +528,12 @@ fn changed_comments(&mut self) -> anyhow::Result<Option<Log>> {
       match self.changed_comments() {
           Ok(None) => {}
           Ok(Some(log)) => {
-              if let Some(warning) = log.warning() {
-                  app.set_message(format!("{COMMENTS_FILE}: {warning}"));
+              let warning = log.warning();
+              if warning != self.warned {
+                  if let Some(warning) = &warning {
+                      app.set_message(format!("{COMMENTS_FILE}: {warning}"));
+                  }
+                  self.warned = warning;
               }
               app.set_events(log.events);
           }
@@ -593,6 +597,7 @@ fn changed_comments(&mut self) -> anyhow::Result<Option<Log>> {
   - With no log, `tick` reads nothing and sets no message.
   - An append from the agent's side shows up even on a tick where the cursor hasn't moved since the last `view.json` write. That's the case `write_view_if_moved`'s early return would otherwise skip.
   - A log with a `not json` line between two good ones: `tick` loads both good events and sets the message `comments.jsonl: skipped lines that aren't events: 2`.
+  - A bad line is reported once. After the first `tick`, an append from the agent's side loads the event and sets no message. The log only grows, so without `warned` the same line would come back on the status line after every append.
   - Unix only: a `comments.jsonl` that's a directory.
     - The fingerprint works, and `fs::read` fails with `Is a directory (os error 21)` (checked on macOS).
     - So `tick` sets the message `comments.jsonl: Is a directory (os error 21)`, and a second `tick` sets it again (retried).
@@ -792,11 +797,11 @@ fn write_pending(&mut self, app: &mut App) {
   - Everything else: `status_line`, which stays the position, counts and hints, and knows nothing about prompts.
 - **`draw_detail`** (also for `ConfirmDelete`, which `draw`'s match gains):
   - With no threads, the comments area is the two lines it is now.
-  - With threads, the value and the comments split the popup: `Constraint::Fill(1)` each.
+  - With threads, the value and the comments share the popup in proportion to the rows each wraps to: `Constraint::Fill(rows)` each, counting a line as `line.width().div_ceil(width)` rows. An even split would give a one-line comment half the popup and cut a long value in half. Wrapping at words can need a row more than that count, which matters only when the popup is nearly full.
   - The heading is `Comments  ·  d delete`.
   - Each message is `author` in bold, two spaces, then the text. A multi-line message puts its first line after the author and the rest underneath. Split on `\n` yourself: ratatui drops control characters inside a `Line`, including `\n`, so the words would run together. Tabs become four spaces, as in the value.
   - A blank line goes between threads.
-  - The paragraph wraps. A thread longer than its half of the popup is cut off; scrolling is out of scope.
+  - The paragraph wraps. A thread longer than its share of the popup is cut off; scrolling is out of scope.
   - Control characters other than `\n` and tab need no handling: ratatui drops them (`ratatui-core` `buffer.rs` and `span.rs` filter `char::is_control`), so comment text can't send escape sequences to the terminal.
 - **`draw_help`** gets a "Cell detail" section, `binding_rows(DETAIL_BINDINGS)`, between Grid and Record view.
   - That makes the overlay 42 rows: 19 grid keys, 3 detail keys, 5 record keys, 4 commands, 4 headings, 3 blank lines between sections, the footer and its blank line, and the border.
@@ -853,6 +858,7 @@ fn write_pending(&mut self, app: &mut App) {
   - `comment_input`: press `c`, `h`, `i` (the way `command_line_mid_edit` types its command); the status line reads `comment: hi`. `CommentInput`'s fields are private to `app.rs`, so the test can't build the mode directly.
   - The input line scrolls: type 100 characters into the comment line at width 50. The last characters typed are on screen, and the cursor (`assert_cursor_position`) is inside the status area.
   - `comment_delete_prompt`: `ConfirmDelete`; the status line asks.
+  - A short thread leaves a long value room: at 80×24, a 12-line value with a one-line comment shows `line 10` and the comment.
   - `help`: re-recorded at 60×44 (above). The diff adds the three grid rows and the Cell detail section, and the end of the Commands section and `Press any key to close` are still there.
   - A test that a `ConfirmDelete` app reloaded with an empty table renders without panicking.
   - `tiny_terminal_does_not_panic` also renders `Comment` mode (press `c`) and `ConfirmDelete` (built directly: its IDs are public) at each size, so the new prompt and popup code runs at 0×0 and 1×1.

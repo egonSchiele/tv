@@ -32,6 +32,9 @@ pub struct SessionSync {
     /// also what `App` starts with, so the first tick reads one only if it
     /// exists.
     comments_seen: Option<Fingerprint>,
+    /// The last skipped-lines warning shown. A bad line never leaves the
+    /// log, so without this every append would show it again.
+    warned: Option<String>,
 }
 
 /// What `view.json` records about the cursor: the row's ID and the column's
@@ -77,6 +80,7 @@ impl SessionSync {
             // parses `table.json` again. Unchanged, it highlights nothing.
             seen: None,
             comments_seen: None,
+            warned: None,
         };
         sync.write(app, position);
         sync
@@ -122,8 +126,12 @@ impl SessionSync {
         match self.changed_comments() {
             Ok(None) => {}
             Ok(Some(log)) => {
-                if let Some(warning) = log.warning() {
-                    app.set_message(format!("{COMMENTS_FILE}: {warning}"));
+                let warning = log.warning();
+                if warning != self.warned {
+                    if let Some(warning) = &warning {
+                        app.set_message(format!("{COMMENTS_FILE}: {warning}"));
+                    }
+                    self.warned = warning;
                 }
                 app.set_events(log.events);
             }
@@ -671,5 +679,24 @@ mod tests {
             "{message}"
         );
         assert!(!dir.exists());
+    }
+
+    #[test]
+    fn a_skipped_line_is_reported_once() {
+        let mut fixture = start(table());
+        fs::write(fixture.comments_path(), "not json\n").unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(
+            fixture.message(),
+            Some("comments.jsonl: skipped lines that aren't events: 1")
+        );
+        fixture.app.message = None;
+        fixture
+            .other_side()
+            .append_events(&[agent_comment("c1")])
+            .unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.threads().len(), 1);
+        assert_eq!(fixture.message(), None, "the same bad line, reported again");
     }
 }
