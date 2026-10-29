@@ -175,6 +175,12 @@ impl Table {
             .collect()
     }
 
+    /// The index of the row whose ID (`row_id`) is `row_id`. `row_indices`
+    /// is for looking up many rows; this is for one.
+    pub fn row_index(&self, row_id: &str) -> Option<usize> {
+        (0..self.rows.len()).find(|&index| self.row_id(index) == row_id)
+    }
+
     pub fn key_column_index(&self) -> Option<usize> {
         let key = self.key.as_deref()?;
         self.columns.iter().position(|column| column.name == key)
@@ -556,6 +562,17 @@ mod tests {
         let unkeyed = Table::parse(r#"[{"a": 1}, {"a": 2}]"#).unwrap();
         let expected = HashMap::from([("#0".to_string(), 0), ("#1".to_string(), 1)]);
         assert_eq!(unkeyed.row_indices(), expected);
+    }
+
+    #[test]
+    fn row_index_finds_one_row_by_id() {
+        let keyed = Table::parse(r#"{"key": "id", "rows": [{"id": 412}, {"id": "abc"}]}"#).unwrap();
+        assert_eq!(keyed.row_index("412"), Some(0));
+        assert_eq!(keyed.row_index("abc"), Some(1));
+        assert_eq!(keyed.row_index("#1"), None);
+        let unkeyed = Table::parse(r#"[{"a": 1}, {"a": 2}]"#).unwrap();
+        assert_eq!(unkeyed.row_index("#1"), Some(1));
+        assert_eq!(unkeyed.row_index("#2"), None);
     }
 
     #[test]

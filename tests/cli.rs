@@ -59,8 +59,13 @@ const NO_SUCH_PID: u32 = 2_147_483_647;
 /// Write `view.json` into session directory `dir` the way a viewer with
 /// process `pid` would, every field included so it parses.
 fn write_view(dir: &Path, pid: u32) {
+    write_view_at(dir, pid, "412", "title");
+}
+
+/// `write_view`, with the cursor on `row_id` and `column`.
+fn write_view_at(dir: &Path, pid: u32, row_id: &str, column: &str) {
     let view = format!(
-        r#"{{"pid": {pid}, "row_id": "412", "column": "title", "updated_at": "2026-10-28T19:02:11Z"}}"#
+        r#"{{"pid": {pid}, "row_id": "{row_id}", "column": "{column}", "updated_at": "2026-10-28T19:02:11Z"}}"#
     );
     fs::write(dir.join("view.json"), view).unwrap();
 }
@@ -637,4 +642,39 @@ fn agent_sessions_lists_every_session() {
         (Value::Null, Value::Null)
     );
     assert_eq!(broken["awaiting_reply"], Value::Null);
+}
+
+#[test]
+fn agent_focus_without_a_viewer_is_all_nulls() {
+    let home = tempfile::tempdir().unwrap();
+    let id = new_session(home.path());
+    let printed = succeeds(&agent_output(home.path(), &["focus", &id], ""));
+    assert_eq!(
+        printed,
+        "{\"viewer_open\":false,\"row_id\":null,\"column\":null,\"value\":null,\"row\":null}\n"
+    );
+}
+
+#[test]
+fn agent_focus_reports_the_viewers_cell() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    write_view_at(&dir, std::process::id(), "404", "title");
+    let focus = agent(home.path(), &["focus", "abc123"], "");
+    assert_eq!(focus["viewer_open"], true);
+    assert_eq!(
+        (focus["row_id"].as_str(), focus["column"].as_str()),
+        (Some("404"), Some("title"))
+    );
+    assert_eq!(focus["value"], "Bump serde to 1.0.229");
+    assert_eq!(focus["row"]["number"], 404);
+
+    // `write_view`'s row 412 isn't in `prs.json`: a push removed it.
+    open_viewer(&dir);
+    let focus = agent(home.path(), &["focus", "abc123"], "");
+    assert_eq!(focus["row_id"], "412");
+    assert_eq!(
+        (focus["value"].clone(), focus["row"].clone()),
+        (Value::Null, Value::Null)
+    );
 }

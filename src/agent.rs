@@ -7,9 +7,10 @@ use std::path::Path;
 use anyhow::{Context, bail};
 use clap::{Args, Subcommand};
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::session::{Session, Sessions};
-use crate::table::{Meta, Table};
+use crate::table::{Meta, Row, Table};
 use crate::time;
 
 #[derive(Subcommand)]
@@ -24,6 +25,8 @@ pub enum AgentCommand {
     },
     /// Print a session's table, without comments.
     Get { id: String },
+    /// What the user's cursor is on.
+    Focus { id: String },
     /// List sessions, most recently modified first.
     Sessions,
 }
@@ -78,6 +81,7 @@ pub fn run(sessions: &Sessions, command: &AgentCommand) -> anyhow::Result<()> {
         AgentCommand::New(input) => serde_json::to_string(&new(sessions, input)?)?,
         AgentCommand::Push { id, input } => serde_json::to_string(&push(sessions, id, input)?)?,
         AgentCommand::Get { id } => serde_json::to_string(&sessions.open(id)?.load_table()?)?,
+        AgentCommand::Focus { id } => serde_json::to_string(&focus(sessions, id)?)?,
         AgentCommand::Sessions => serde_json::to_string(&list_sessions(sessions)?)?,
     };
     println!("{json}");
@@ -183,9 +187,99 @@ fn list_sessions(sessions: &Sessions) -> anyhow::Result<Vec<Listed>> {
     Ok(listed)
 }
 
+/// What `focus` and `goto` print: the cell the user's cursor is on, or for
+/// `goto` is being sent to, with its value and its row.
+#[derive(Debug, PartialEq, Serialize)]
+pub struct Focus {
+    viewer_open: bool,
+    row_id: Option<String>,
+    column: Option<String>,
+    /// `null` for an empty cell, or when the row or column isn't in the table.
+    value: Value,
+    /// `null` when the row isn't in the table: the viewer was last on a row
+    /// that a push has since removed.
+    row: Option<Row>,
+}
+
+impl Focus {
+    fn at(
+        table: &Table,
+        viewer_open: bool,
+        row_id: Option<String>,
+        column: Option<String>,
+    ) -> Focus {
+        let index = row_id.as_deref().and_then(|row_id| table.row_index(row_id));
+        let value = index
+            .zip(column.as_deref())
+            .and_then(|(index, column)| table.cell(index, column))
+            .cloned()
+            .unwrap_or_default();
+        Focus {
+            viewer_open,
+            row: index.map(|index| table.rows[index].clone()),
+            row_id,
+            column,
+            value,
+        }
+    }
+}
+
+fn focus(sessions: &Sessions, id: &str) -> anyhow::Result<Focus> {
+    let session = sessions.open(id)?;
+    let table = session.load_table()?;
+    let (row_id, column) = session
+        .read_view()?
+        .map_or((None, None), |view| (view.row_id, view.column));
+    Ok(Focus::at(&table, session.viewer_open(), row_id, column))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    fn prs() -> Table {
+        Table::from_path("examples/prs.json").unwrap()
+    }
+
+    fn at(row_id: Option<&str>, column: Option<&str>) -> Focus {
+        Focus::at(
+            &prs(),
+            true,
+            row_id.map(str::to_string),
+            column.map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn focus_gives_the_cell_and_its_row() {
+        let focus = at(Some("404"), Some("title"));
+        assert_eq!(focus.value, json!("Bump serde to 1.0.229"));
+        assert_eq!(focus.row.unwrap()["number"], 404);
+    }
+
+    #[test]
+    fn focus_on_a_row_thats_gone_keeps_the_ids() {
+        let focus = at(Some("412"), Some("title"));
+        assert_eq!(focus.row_id.as_deref(), Some("412"));
+        assert_eq!((focus.value, focus.row), (Value::Null, None));
+    }
+
+    #[test]
+    fn focus_on_a_column_thats_gone_still_has_the_row() {
+        let focus = at(Some("404"), Some("nope"));
+        assert_eq!(focus.value, Value::Null);
+        assert!(focus.row.is_some());
+    }
+
+    #[test]
+    fn focus_with_no_position_is_all_nulls() {
+        let focus = at(None, None);
+        assert_eq!(
+            serde_json::to_value(&focus).unwrap(),
+            json!({"viewer_open": true, "row_id": null, "column": null, "value": null, "row": null})
+        );
+    }
 
     #[test]
     fn open_command_sets_tv_home_when_it_was_set() {

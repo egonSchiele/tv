@@ -247,7 +247,7 @@ Print the current table (table format, without comments).
 }
 ```
 
-`row` gives the agent context about what the human is looking at. If the viewer has never been opened, `row_id`/`column`/`value`/`row` are null.
+`row` gives the agent context about what the human is looking at. If the viewer has never been opened, `row_id`/`column`/`value`/`row` are null. A closed viewer's last position is still reported, with `viewer_open: false`. If a push has since removed that row, `row_id` and `column` are kept and `value` and `row` are null.
 
 ### `tv agent comments <id> [--all]`
 
