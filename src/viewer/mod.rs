@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
+use ratatui::layout::Rect;
 
 use crate::table::Table;
 use app::App;
@@ -26,6 +27,8 @@ pub fn run(table: Table) -> anyhow::Result<()> {
 
 fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<()> {
     while !app.should_quit {
+        let size = terminal.size()?;
+        sync_viewport(app, Rect::new(0, 0, size.width, size.height));
         terminal.draw(|frame| render::draw(frame, app))?;
         // A resize event needs no handling: the next draw uses the new size.
         if event::poll(TICK)?
@@ -35,4 +38,11 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<(
         }
     }
     Ok(())
+}
+
+/// Tell `app` how big the grid is on a screen of this size. Called before
+/// every draw, so a resize is picked up on the next frame.
+fn sync_viewport(app: &mut App, screen: Rect) {
+    let grid = render::areas(screen).body;
+    app.set_viewport(grid.width, grid.height);
 }

@@ -11,9 +11,43 @@ use super::app::App;
 use super::layout::{self, Align, VisibleColumn};
 use crate::table::{ColumnType, cell_text, single_line};
 
+/// Where each part of the screen goes.
+pub struct Areas {
+    pub header: Rect,
+    pub body: Rect,
+    /// The full screen width, so the divider can join the side borders.
+    pub divider: Rect,
+    pub status: Rect,
+}
+
+/// The screen layout. `draw` uses it, and the event loop uses it to tell `App`
+/// how big the grid is, so the two can't disagree.
+pub fn areas(screen: Rect) -> Areas {
+    let inner = Block::bordered().inner(screen);
+    let [header, body, divider, status] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+    let divider = Rect {
+        x: screen.x,
+        width: screen.width,
+        ..divider
+    };
+    Areas {
+        header,
+        body,
+        divider,
+        status,
+    }
+}
+
 pub fn draw(frame: &mut Frame, app: &App) {
-    let area = frame.area();
+    let screen = frame.area();
     let table = app.table();
+    let areas = areas(screen);
 
     let mut block = Block::bordered();
     if let Some(title) = &table.title {
@@ -23,36 +57,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
     if let Some(session_id) = &app.session_id {
         block = block.title_top(Line::from(format!(" {session_id} ")).right_aligned());
     }
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    frame.render_widget(block, screen);
 
-    let [header_area, body_area, divider_area, status_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(inner);
-
-    let visible = layout::visible_columns(
-        app.widths(),
-        table.key_column_index(),
-        app.first_col,
-        inner.width,
-    );
-    frame.render_widget(header_line(app, &visible), header_area);
+    let visible = app.visible_columns();
+    frame.render_widget(header_line(app, &visible), areas.header);
     frame.render_widget(
-        Paragraph::new(body_lines(app, &visible, body_area.height)),
-        body_area,
+        Paragraph::new(body_lines(app, &visible, areas.body.height)),
+        areas.body,
     );
-    // The divider runs across the side borders too, joining them with ├ and ┤.
-    let divider_row = Rect {
-        x: area.x,
-        width: area.width,
-        ..divider_area
-    };
-    frame.render_widget(Line::from(divider(area.width)), divider_row);
-    frame.render_widget(status_line(app), status_area);
+    frame.render_widget(Line::from(divider(screen.width)), areas.divider);
+    frame.render_widget(status_line(app), areas.status);
 }
 
 fn header_line(app: &App, visible: &[VisibleColumn]) -> Line<'static> {
@@ -86,6 +100,9 @@ fn cell_style(app: &App, row: usize, col: usize) -> Style {
     let table = app.table();
     let value = table.cell(row, &table.columns[col].name);
     let mut style = Style::new();
+    if (row, col) == (app.cursor.row, app.cursor.col) {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
     if value.is_none_or(Value::is_null) {
         style = style.add_modifier(Modifier::DIM);
     }
@@ -144,6 +161,7 @@ mod tests {
     use super::*;
     use crate::snapshot::assert_snapshot;
     use crate::table::Table;
+    use crate::viewer::sync_viewport;
 
     fn app(json: &str) -> App {
         App::new(Table::parse(json).unwrap())
@@ -153,13 +171,15 @@ mod tests {
         App::new(Table::from_path("examples/prs.json").unwrap())
     }
 
-    fn render(app: &App, width: u16, height: u16) -> Terminal<TestBackend> {
+    /// Draw `app` the way the event loop does: viewport first, then the frame.
+    fn render(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
+        sync_viewport(app, Rect::new(0, 0, width, height));
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| draw(frame, app)).unwrap();
         terminal
     }
 
-    fn render_text(app: &App, width: u16, height: u16) -> String {
+    fn render_text(app: &mut App, width: u16, height: u16) -> String {
         render(app, width, height).backend().to_string()
     }
 
@@ -167,12 +187,12 @@ mod tests {
     fn prs_wide() {
         let mut app = prs();
         app.session_id = Some("k3f9x2".to_string());
-        assert_snapshot("prs_wide", &render_text(&app, 100, 20));
+        assert_snapshot("prs_wide", &render_text(&mut app, 100, 20));
     }
 
     #[test]
     fn prs_narrow() {
-        assert_snapshot("prs_narrow", &render_text(&prs(), 50, 12));
+        assert_snapshot("prs_narrow", &render_text(&mut prs(), 50, 12));
     }
 
     #[test]
@@ -182,35 +202,35 @@ mod tests {
                 {"id": "b-another-long-identifier", "name": "second", "size": 200, "note": "also"}
             ]}"#);
         app.first_col = 2;
-        assert_snapshot("pinned_scrolled", &render_text(&app, 45, 7));
+        assert_snapshot("pinned_scrolled", &render_text(&mut app, 45, 7));
     }
 
     #[test]
     fn wide_characters_truncate_cleanly() {
-        let app = app(
+        let mut app = app(
             r#"{"columns": [{"name": "text", "width": 7}, {"name": "n"}], "rows": [
                 {"text": "日本語のテキスト", "n": 1},
                 {"text": "🦀 crab 🦀 crab", "n": 2},
                 {"text": "ascii", "n": 3}
             ]}"#,
         );
-        assert_snapshot("wide_characters", &render_text(&app, 24, 8));
+        assert_snapshot("wide_characters", &render_text(&mut app, 24, 8));
     }
 
     #[test]
     fn empty_table() {
-        let app = app(
+        let mut app = app(
             r#"{"title": "Empty", "columns": [{"name": "id"}, {"name": "title"}], "rows": []}"#,
         );
-        assert_snapshot("empty", &render_text(&app, 30, 6));
+        assert_snapshot("empty", &render_text(&mut app, 30, 6));
     }
 
     #[test]
     fn title_and_headers_show_newlines_like_cells() {
-        let app = app(
+        let mut app = app(
             r#"{"title": "two\nlines", "columns": [{"name": "a\nb"}], "rows": [{"a\nb": "c\nd"}]}"#,
         );
-        let text = render_text(&app, 30, 6);
+        let text = render_text(&mut app, 30, 6);
         assert!(text.contains(" two↵lines "), "{text}");
         assert!(text.contains("│ a↵b │"), "{text}");
         assert!(text.contains("│ c↵d │"), "{text}");
@@ -218,8 +238,8 @@ mod tests {
 
     #[test]
     fn header_is_bold_and_nulls_are_dim() {
-        let app = app(r#"[{"a": null, "b": 1}]"#);
-        let terminal = render(&app, 20, 6);
+        let mut app = app(r#"[{"a": null, "b": 1}]"#);
+        let terminal = render(&mut app, 20, 6);
         let buffer = terminal.backend().buffer();
         // Row 0 is the top border; x 0 is the left border and x 1 is padding.
         assert!(buffer[(2, 1)].modifier.contains(Modifier::BOLD));
@@ -230,7 +250,7 @@ mod tests {
     #[test]
     fn tiny_terminal_does_not_panic() {
         for (width, height) in [(0, 0), (1, 1), (3, 2), (10, 3)] {
-            render(&prs(), width, height);
+            render(&mut prs(), width, height);
         }
     }
 }
