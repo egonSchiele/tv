@@ -1,4 +1,4 @@
-.PHONY: all build run test lint fmt fmt-check check clean
+.PHONY: all build run test snapshots lint fmt fmt-check check clean
 
 all: build
 
@@ -10,6 +10,10 @@ run:
 
 test:
 	cargo test
+
+# Rewrite the render snapshot files. Review the changes with `git diff`.
+snapshots:
+	UPDATE_SNAPSHOTS=1 cargo test
 
 # Clippy is the linter (like ESLint). -D warnings turns every warning into an error.
 lint:

@@ -24,7 +24,9 @@ clap = { version = "4.6.7", default-features = false, features = [
 # Only the crossterm backend; the defaults add widgets and macros we don't use.
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+# `preserve_order` keeps object keys in file order (the spec infers columns in
+# first-seen order). It adds one crate, indexmap; its own deps are already here.
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 unicode-width = "0.2.3"
 
 [dev-dependencies]
