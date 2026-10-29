@@ -115,18 +115,24 @@ fn body_lines(app: &App, visible: &[VisibleColumn], area: Rect) -> Vec<Line<'sta
 }
 
 /// The one place that decides how a body cell looks: the cursor cell is
-/// brightest, then the cursor's row and column, then everything else. Comment
-/// markers and change highlights get added here.
+/// brightest, then the cursor's row and column, then everything else. A cell
+/// the last reload changed is highlighted over its row and column, but not
+/// on the cursor: that one stays reversed, the brightest thing on screen.
+/// Comment markers get added here.
 fn cell_style(app: &App, row: usize, col: usize) -> Style {
     let theme = &app.theme;
     let cursor = app.cursor;
-    let mut style = if (row, col) == (cursor.row, cursor.col) {
+    let on_cursor = (row, col) == (cursor.row, cursor.col);
+    let mut style = if on_cursor {
         theme.cursor_cell
     } else if row == cursor.row || col == cursor.col {
         theme.cursor_line
     } else {
         Style::new()
     };
+    if app.is_highlighted(row, col) && !on_cursor {
+        style = style.patch(theme.changed);
+    }
     let table = app.table();
     if table
         .cell(row, &table.columns[col].name)
@@ -182,8 +188,8 @@ fn divider(width: u16) -> String {
     format!("├{middle}┤")
 }
 
-/// Key hints after the position, unless a message is showing. The full list
-/// is in the help overlay.
+/// Key hints after the position, unless a message or a reload error is
+/// showing. The full list is in the help overlay.
 const STATUS_HINTS: &str = "? help  : command  q quit";
 
 /// The status line, or the `:` line while a command is being typed.
@@ -221,10 +227,13 @@ fn status_line(app: &App) -> Line<'static> {
     } else {
         (format!("row {row}/{rows}  col {col}/{cols}"), STATUS_HINTS)
     };
-    let after = app
-        .message
-        .as_ref()
-        .map_or(hints, |message| message.text.as_str());
+    // A message (a save result, say) wins while it's up; a reload error
+    // stays until a reload succeeds, so it comes back when the message goes.
+    let after = match (&app.message, &app.reload_error) {
+        (Some(message), _) => message.text.clone(),
+        (None, Some(error)) => format!("reload failed: {error}"),
+        (None, None) => hints.to_string(),
+    };
     Line::from(format!(" {position}  ·  {after}"))
 }
 
@@ -414,6 +423,9 @@ mod tests {
     use crate::snapshot::{assert_snapshot, buffer_view};
     use crate::table::Table;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use serde_json::json;
+    use std::time::Instant;
 
     use crate::viewer::app::Cursor;
     use crate::viewer::fit_viewport;
@@ -619,5 +631,36 @@ mod tests {
                 render(&mut app, width, height);
             }
         }
+    }
+
+    #[test]
+    fn reload_highlights() {
+        let mut app = prs();
+        let mut table = app.table().clone();
+        table.rows[1].insert("title".to_string(), json!("Bump serde to 1.0.230"));
+        let mut added = table.rows[0].clone();
+        added.insert("number".to_string(), json!(999));
+        table.rows.insert(2, added);
+        app.set_table(table, Instant::now());
+        // The cursor is on row 0: the changed cell is on row 1, the new row
+        // is row 2, and neither touches the cursor cell.
+        assert_snapshot("reload_highlights", &render_text(&mut app, 100, 8));
+    }
+
+    #[test]
+    fn reload_error_status() {
+        let mut app = prs();
+        app.reload_error = Some("table.json: expected value at line 3 column 1".to_string());
+        assert_snapshot("reload_error_status", &render_text(&mut app, 80, 6));
+    }
+
+    #[test]
+    fn a_reload_to_an_empty_table_in_the_cell_popup_does_not_panic() {
+        let mut app = prs();
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.mode, Mode::Detail);
+        app.set_table(Table::parse("[{}]").unwrap(), Instant::now());
+        render(&mut app, 60, 10);
+        assert_eq!(app.mode, Mode::Grid);
     }
 }

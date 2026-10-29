@@ -1,12 +1,15 @@
 //! The viewer's half of the session directory: `view.json` out (where the
-//! cursor is). Everything the event loop does to the filesystem goes through
-//! here, with the time passed in so tests control it.
+//! cursor is) and `table.json` in (live reload). Everything the event loop
+//! does to the filesystem goes through here, with the time passed in so tests
+//! control it. Later polls (`comments.jsonl`, `goto.json`) go in `tick`,
+//! next to the `table.json` one.
 
 use std::io;
 use std::time::{Duration, Instant, SystemTime};
 
 use super::app::App;
-use crate::session::{Session, VIEW_FILE, View};
+use crate::session::{Fingerprint, Session, TABLE_FILE, VIEW_FILE, View};
+use crate::table::Table;
 use crate::time;
 
 /// At most one `view.json` write per this much cursor movement.
@@ -21,6 +24,9 @@ pub struct SessionSync {
     written: Position,
     /// When the cursor first moved away from `written`, if it has.
     moved_at: Option<Instant>,
+    /// `table.json` as of the last look, so a tick only parses it when it
+    /// changed. `None` if it couldn't be read.
+    seen: Option<Fingerprint>,
 }
 
 /// What `view.json` records about the cursor: the row's ID and the column's
@@ -56,18 +62,29 @@ impl SessionSync {
     /// opens.
     pub fn start(session: Session, app: &mut App) -> SessionSync {
         let position = Position::of(app);
+        // `main` loaded the table moments ago, so this is the version on
+        // screen. If it can't be read now, the first tick says so.
+        let seen = session.table_fingerprint().ok();
         let mut sync = SessionSync {
             session,
             written: position.clone(),
             moved_at: None,
+            seen,
         };
         sync.write(app, position);
         sync
     }
 
-    /// Called once per event-loop iteration, before drawing. Writes
-    /// `view.json` if the cursor moved and the debounce has passed.
+    /// Called once per event-loop iteration, before drawing. Reloads
+    /// `table.json` if it changed, then writes `view.json` if the cursor
+    /// moved and the debounce has passed. A reload can move the cursor (its
+    /// row was deleted), so it goes first.
     pub fn tick(&mut self, app: &mut App, now: Instant) {
+        match self.changed_table() {
+            Ok(None) => {}
+            Ok(Some(table)) => app.set_table(table, now),
+            Err(error) => app.reload_error = Some(file_error(TABLE_FILE, &error)),
+        }
         let position = Position::of(app);
         if position == self.written {
             self.moved_at = None;
@@ -101,6 +118,22 @@ impl SessionSync {
         result
     }
 
+    /// The table if `table.json` changed since the last look, `None` if not.
+    /// A file that fails to parse is still recorded as seen, so it's parsed
+    /// once, not every 250ms. A missing one (`tv rm --force`) is an error
+    /// like any other: the viewer keeps the last table and keeps running.
+    fn changed_table(&mut self) -> anyhow::Result<Option<Table>> {
+        // Fingerprint first, then read. A write landing between the two costs
+        // one extra reload next tick; the other order could record the new
+        // fingerprint with the old contents and miss the change.
+        let fingerprint = self.session.table_fingerprint()?;
+        if Some(fingerprint) == self.seen {
+            return Ok(None);
+        }
+        self.seen = Some(fingerprint);
+        self.session.load_table().map(Some)
+    }
+
     /// Write `view.json` for `position`. An error goes to the status line and
     /// isn't retried until the cursor moves again: the position is advisory,
     /// and a full disk shouldn't put up a message every 100ms.
@@ -113,7 +146,7 @@ impl SessionSync {
     }
 }
 
-/// A status-line error about one of the session's files: `view.json: ` and
+/// A status-line error about one of the session's files: `table.json: ` and
 /// the underlying error, without the context chain. The chain starts with
 /// the session's full path, which would push the reason off a narrow status
 /// line, and the file name already says which file it was.
@@ -300,6 +333,76 @@ mod tests {
         assert_eq!(view.pid, None);
         assert_eq!(view.row_id.as_deref(), Some("b"));
         assert!(!fixture.sync.session.viewer_open());
+    }
+
+    #[test]
+    fn a_tick_right_after_start_reloads_nothing() {
+        let mut fixture = start(table());
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert!(!fixture.app.is_highlighted(0, 0));
+        assert_eq!(fixture.app.reload_error, None);
+    }
+
+    #[test]
+    fn a_new_table_json_is_reloaded_and_highlighted() {
+        let mut fixture = start(table());
+        let changed =
+            Table::parse(r#"{"key": "id", "rows": [{"id": "a", "n": 10}, {"id": "b", "n": 2}]}"#)
+                .unwrap();
+        fixture.sync.session.write_table(&changed).unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.table().rows, changed.rows);
+        assert!(fixture.app.is_highlighted(0, 1));
+        assert!(!fixture.app.is_highlighted(1, 1));
+    }
+
+    #[test]
+    fn a_broken_table_json_keeps_the_table_and_is_parsed_once() {
+        let mut fixture = start(table());
+        let table_path = fixture.view_path.with_file_name(TABLE_FILE);
+        fs::write(&table_path, "not json").unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.table().rows, table().rows);
+        assert_eq!(
+            fixture.app.reload_error.as_deref(),
+            Some("table.json: expected ident at line 1 column 2")
+        );
+        // Recorded as seen, which is what stops a re-parse every tick.
+        let current = fixture.sync.session.table_fingerprint().unwrap();
+        assert_eq!(fixture.sync.seen, Some(current));
+
+        fixture.sync.session.write_table(&table()).unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.reload_error, None);
+    }
+
+    #[test]
+    fn two_writes_in_one_second_are_both_noticed() {
+        let mut fixture = start(table());
+        for rows in [3, 4] {
+            let json: Vec<String> = (0..rows)
+                .map(|row| format!(r#"{{"id": "r{row}", "n": {row}}}"#))
+                .collect();
+            let table = format!(r#"{{"key": "id", "rows": [{}]}}"#, json.join(", "));
+            fixture
+                .sync
+                .session
+                .write_table(&Table::parse(&table).unwrap())
+                .unwrap();
+            fixture.sync.tick(&mut fixture.app, Instant::now());
+            assert_eq!(fixture.app.table().rows.len(), rows);
+        }
+    }
+
+    #[test]
+    fn a_removed_session_keeps_the_table_and_says_so() {
+        let mut fixture = start(table());
+        let other = fixture.sessions.open(&fixture.id).unwrap();
+        fixture.sessions.remove(other).unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.table().rows, table().rows);
+        let error = fixture.app.reload_error.as_deref().unwrap();
+        assert!(error.starts_with("table.json: No such file"), "{error}");
     }
 
     #[test]

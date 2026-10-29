@@ -64,6 +64,17 @@ pub struct View {
     pub updated_at: String, // RFC 3339, from `time::rfc3339`
 }
 
+/// Enough of `table.json`'s metadata to notice a rewrite: `write_atomic`
+/// renames a new file into place, so the mtime changes, and the size catches
+/// two writes within one clock tick on a filesystem with coarse timestamps.
+/// Public so the viewer can keep the last one it saw; the fields are only
+/// for comparing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fingerprint {
+    modified: SystemTime,
+    len: u64,
+}
+
 /// What `tv ls` shows about a session.
 pub struct Summary {
     pub id: String,
@@ -246,6 +257,18 @@ impl Session {
 
     pub fn load_table(&self) -> anyhow::Result<Table> {
         Table::from_path(self.dir.join(TABLE_FILE))
+    }
+
+    /// `table.json`'s fingerprint: one `metadata` call, so the viewer can poll
+    /// it cheaply and parse only when it changed.
+    pub fn table_fingerprint(&self) -> anyhow::Result<Fingerprint> {
+        let path = self.dir.join(TABLE_FILE);
+        let reading = || format!("reading {}", path.display());
+        let metadata = fs::metadata(&path).with_context(reading)?;
+        Ok(Fingerprint {
+            modified: metadata.modified().with_context(reading)?,
+            len: metadata.len(),
+        })
     }
 
     /// Replace the session's table. `Table::save` writes atomically, so a
@@ -728,6 +751,19 @@ mod tests {
     #[test]
     fn pid_0_is_never_asked_about() {
         assert!(!pid_is_alive(0));
+    }
+
+    #[test]
+    fn the_fingerprint_changes_with_the_table() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        let before = session.table_fingerprint().unwrap();
+        assert_eq!(session.table_fingerprint().unwrap(), before);
+        // Same second, different length: still a different fingerprint.
+        let mut longer = table();
+        longer.title = Some("A longer title than before".to_string());
+        session.write_table(&longer).unwrap();
+        assert_ne!(session.table_fingerprint().unwrap(), before);
     }
 
     #[test]

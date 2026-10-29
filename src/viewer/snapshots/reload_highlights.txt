@@ -1,0 +1,13 @@
+"┌ Open pull requests ──────────────────────────────────────────────────────────────────────────────┐"
+"│ number │ title                                              │ author     │ state │ additions │   │"
+"│    409 │ Fix login redirect                                 │ jordan     │ open  │       313 │   │"
+"│    404 │ Bump serde to 1.0.230                              │ dependabot │ open  │         9 │   │"
+"│    999 │ Fix login redirect                                 │ jordan     │ open  │       313 │   │"
+"├──────────────────────────────────────────────────────────────────────────────────────────────────┤"
+"│ row 1/41  col 1/9  ·  ? help  : command  q quit                                                  │"
+"└──────────────────────────────────────────────────────────────────────────────────────────────────┘"
+--- styles
+row 1: 1..9 BOLD, 10..62 BOLD, 63..75 BOLD, 76..83 BOLD, 84..95 BOLD
+row 2: 1..9 BOLD | REVERSED, 9..96 fg=Indexed(252) bg=Indexed(236)
+row 3: 1..9 fg=Indexed(252) bg=Indexed(236), 10..62 fg=Indexed(230) bg=Indexed(58)
+row 4: 1..9 fg=Indexed(230) bg=Indexed(58), 10..62 fg=Indexed(230) bg=Indexed(58), 63..75 fg=Indexed(230) bg=Indexed(58), 76..83 fg=Indexed(230) bg=Indexed(58), 84..95 fg=Indexed(230) bg=Indexed(58)

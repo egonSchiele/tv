@@ -326,7 +326,8 @@ src/
     app.rs         # App state: table, cursor, scroll, mode (Grid/Detail/Record/Input/Help), highlights
     render.rs      # draw functions; pure, take &App
     layout.rs      # column widths, visible column range given pinned column and terminal width
-    sync.rs        # the viewer's file IO: writes view.json
+    sync.rs        # the viewer's file IO: writes view.json, polls table.json
+    diff.rs        # after a reload: where the cursor goes, which cells changed
 ```
 
 Keep `render` pure (state in, frame out) and keep all mutation in `app.rs`. This is the standard ratatui pattern and avoids borrow-checker trouble.

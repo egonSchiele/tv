@@ -1,5 +1,6 @@
 //! Viewer state. All mutation happens here; render only reads it.
 
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -8,13 +9,15 @@ use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use super::diff;
 use super::layout::{self, VisibleColumn};
 use super::theme::Theme;
 use crate::files;
 use crate::table::Table;
 
-/// Indices into `table.rows` and `table.columns`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Indices into `table.rows` and `table.columns`. Also names a cell in a
+/// set of highlighted cells, hence `Hash`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Cursor {
     pub row: usize,
     pub col: usize,
@@ -265,6 +268,15 @@ impl ColonCommand {
 /// How long a status-line message stays up.
 const MESSAGE_DURATION: Duration = Duration::from_secs(3);
 
+/// How long cells stay highlighted after a reload changed them.
+const HIGHLIGHT_DURATION: Duration = Duration::from_secs(5);
+
+/// The cells the last reload changed, and when to stop showing that.
+struct Highlight {
+    cells: HashSet<Cursor>,
+    until: Instant,
+}
+
 pub struct Message {
     pub text: String,
     shown_at: Instant,
@@ -376,6 +388,10 @@ pub struct App {
     pub theme: Theme,
     pub mode: Mode,
     pub message: Option<Message>,
+    /// Why the last reload of `table.json` failed, until one succeeds. The
+    /// status line shows it whenever no message is up.
+    pub reload_error: Option<String>,
+    highlight: Option<Highlight>, // set only through set_table
     /// The current file in vim's sense: where the last successful save went.
     /// It starts as `None` even after `tv file.json`, so `:w` and `s` default
     /// to `./<title-slug>.json` as the spec says. That's deliberate.
@@ -403,6 +419,8 @@ impl App {
             theme: Theme::color(),
             mode: Mode::Grid,
             message: None,
+            reload_error: None,
+            highlight: None,
             save_path: None,
             should_quit: false,
         }
@@ -410,6 +428,36 @@ impl App {
 
     pub fn table(&self) -> &Table {
         &self.table
+    }
+
+    /// Replace the table after a reload. Recomputes `widths` (the reason
+    /// `table` is private), keeps the cursor on the same row ID and column
+    /// name, clamps if either is gone, and highlights what changed. The
+    /// highlight replaces the previous reload's: its indices were into the
+    /// old table and may point at different cells now.
+    pub fn set_table(&mut self, table: Table, now: Instant) {
+        let cursor = diff::same_cell(&self.table, self.cursor, &table);
+        let changed = diff::changed_cells(&self.table, &table);
+        self.widths = layout::column_widths(&table);
+        self.table = table;
+        self.highlight = Some(Highlight {
+            cells: changed,
+            until: now + HIGHLIGHT_DURATION,
+        });
+        self.reload_error = None;
+        self.move_to(cursor.row, cursor.col); // clamps and scrolls into view
+        // Detail and Record need a cell under the cursor, the same check
+        // `open_cell_view` makes before opening them.
+        if matches!(self.mode, Mode::Detail | Mode::Record) && !self.has_cell() {
+            self.mode = Mode::Grid;
+        }
+    }
+
+    /// Whether the last reload changed this cell, for the next few seconds.
+    pub fn is_highlighted(&self, row: usize, col: usize) -> bool {
+        self.highlight
+            .as_ref()
+            .is_some_and(|highlight| highlight.cells.contains(&Cursor { row, col }))
     }
 
     /// Whether there's a cell under the cursor: the table has at least one
@@ -541,8 +589,9 @@ impl App {
         }
     }
 
-    /// Clear the status-line message once it's `MESSAGE_DURATION` old. Takes
-    /// the time as an argument so tests don't have to sleep.
+    /// Clear the status-line message once it's `MESSAGE_DURATION` old, and
+    /// the reload highlight once it's over. Takes the time as an argument so
+    /// tests don't have to sleep.
     pub fn tick(&mut self, now: Instant) {
         let expired = self
             .message
@@ -550,6 +599,13 @@ impl App {
             .is_some_and(|message| now.duration_since(message.shown_at) >= MESSAGE_DURATION);
         if expired {
             self.message = None;
+        }
+        let highlight_over = self
+            .highlight
+            .as_ref()
+            .is_some_and(|highlight| now >= highlight.until);
+        if highlight_over {
+            self.highlight = None;
         }
     }
 
@@ -686,6 +742,13 @@ impl App {
         // terminal gets taller.
         self.first_row = self.first_row.min(self.max_first_row());
 
+        // A reload can leave `first_col` past the last column; then start
+        // from the left again. This comes before the pinned-column return,
+        // which would otherwise skip it and leave only the key column on
+        // screen.
+        if self.first_col >= self.table.columns.len() {
+            self.first_col = 0;
+        }
         if Some(col) == self.table.key_column_index() {
             return; // the pinned column is always on screen
         }
@@ -1311,5 +1374,121 @@ mod tests {
             assert_eq!(app.cursor.col, 0);
             assert_eq!(app.first_col, 0);
         }
+    }
+
+    /// `rows` rows by `cols` columns named `c0`…; every cell is like `r2c1`.
+    fn grid_table(rows: usize, cols: usize, key: Option<&str>) -> Table {
+        let rows: Vec<String> = (0..rows)
+            .map(|row| {
+                let cells: Vec<String> = (0..cols)
+                    .map(|col| format!(r#""c{col}": "r{row}c{col}""#))
+                    .collect();
+                format!("{{{}}}", cells.join(", "))
+            })
+            .collect();
+        let key = key
+            .map(|key| format!(r#""key": "{key}", "#))
+            .unwrap_or_default();
+        Table::parse(&format!(r#"{{{key}"rows": [{}]}}"#, rows.join(", "))).unwrap()
+    }
+
+    #[test]
+    fn set_table_recomputes_widths() {
+        let mut app = grid_app(None);
+        let before = app.visible_columns().len();
+        let wide = Table::parse(&format!(
+            r#"[{{"c0": "{}", "c1": "x", "c2": "y"}}]"#,
+            "w".repeat(30)
+        ))
+        .unwrap();
+        app.set_table(wide, Instant::now());
+        assert_eq!(app.visible_columns()[0].width, 30);
+        assert!(app.visible_columns().len() < before);
+    }
+
+    #[test]
+    fn set_table_clamps_a_cursor_past_the_end() {
+        let mut app = grid_app(None);
+        press_char(&mut app, 'G');
+        assert_eq!((app.cursor.row, app.first_row), (49, 40));
+        app.set_table(grid_table(5, 10, None), Instant::now());
+        assert_eq!((app.cursor.row, app.first_row), (4, 0));
+    }
+
+    #[test]
+    fn set_table_from_an_empty_table_highlights_everything() {
+        let mut app = App::new(Table::parse("[]").unwrap());
+        app.set_viewport(60, 10);
+        app.set_table(grid_table(50, 10, None), Instant::now());
+        assert_eq!(app.cursor, Cursor { row: 0, col: 0 });
+        assert!(app.is_highlighted(0, 0));
+        assert!(app.is_highlighted(49, 9));
+    }
+
+    #[test]
+    fn set_table_follows_the_row_id() {
+        let mut app = grid_app(Some("c0"));
+        app.move_to(3, 2);
+        // The same rows from r1 on: row r3 is now at index 2.
+        let rows: Vec<String> = (1..50)
+            .map(|row| format!(r#"{{"c0": "r{row}c0", "c2": "r{row}c2"}}"#))
+            .collect();
+        let shifted = Table::parse(&format!(
+            r#"{{"key": "c0", "rows": [{}]}}"#,
+            rows.join(", ")
+        ))
+        .unwrap();
+        app.set_table(shifted, Instant::now());
+        assert_eq!(app.cursor, Cursor { row: 2, col: 1 });
+        assert!(!app.is_highlighted(2, 1));
+    }
+
+    #[test]
+    fn a_reload_with_fewer_columns_scrolls_back_from_the_pinned_column() {
+        let mut app = grid_app(Some("c0"));
+        press_char(&mut app, '$');
+        press_char(&mut app, '0'); // back on the pinned column; first_col stays
+        assert!(app.first_col > 2, "{}", app.first_col);
+        app.set_table(grid_table(50, 3, Some("c0")), Instant::now());
+        assert_eq!(app.first_col, 0);
+        assert_eq!(app.visible_columns().len(), 3);
+    }
+
+    #[test]
+    fn a_reload_without_cells_closes_the_cell_views() {
+        let empty = || Table::parse(r#"{"columns": [{"name": "c0"}], "rows": []}"#).unwrap();
+        for key in [KeyCode::Enter, KeyCode::Char('r')] {
+            let mut app = grid_app(None);
+            press(&mut app, key, KeyModifiers::NONE);
+            assert_ne!(app.mode, Mode::Grid);
+            app.set_table(empty(), Instant::now());
+            assert_eq!(app.mode, Mode::Grid);
+        }
+
+        let mut app = grid_app(None);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        app.set_table(grid_table(3, 3, None), Instant::now());
+        assert_eq!(app.mode, Mode::Detail);
+    }
+
+    #[test]
+    fn highlights_last_five_seconds() {
+        let mut app = grid_app(None);
+        let now = Instant::now();
+        app.set_table(grid_table(51, 10, None), now);
+        assert!(app.is_highlighted(50, 0));
+        assert!(!app.is_highlighted(0, 0));
+        app.tick(now + Duration::from_secs(4));
+        assert!(app.is_highlighted(50, 0));
+        app.tick(now + HIGHLIGHT_DURATION);
+        assert!(!app.is_highlighted(50, 0));
+    }
+
+    #[test]
+    fn set_table_clears_the_reload_error() {
+        let mut app = grid_app(None);
+        app.reload_error = Some("table.json: broken".to_string());
+        app.set_table(grid_table(3, 3, None), Instant::now());
+        assert_eq!(app.reload_error, None);
     }
 }

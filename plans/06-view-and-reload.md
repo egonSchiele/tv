@@ -25,7 +25,7 @@ Depends on: ADI-201's first PR merged (#6, `af8ddef`).
 - **No new crates.** The pid check needs `kill(pid, 0)`, which std doesn't expose. `rustix` is already a dependency (for `dup2_stdin`); add its `process` feature. I checked with this lockfile: `cargo tree --locked` still passes and the crate count is unchanged (89 on the host, 103 with `--target all`), because the feature only turns on a feature of `linux-raw-sys`, which is already in the tree. `Cargo.lock` doesn't change. crossterm doesn't turn `process` on (it uses `std`, `stdio`, `termios`, `fs`, `alloc`), so the `Cargo.toml` comment needs to say why this one adds no crates.
 - **Two commits, one per sub-issue, each passing `make check`.** `make lint` runs clippy with `-D warnings` and `dead_code` fires in a binary crate, so everything a commit adds needs a caller in that commit. The split below holds that.
 - **Nothing here needs a terminal to test.** The viewer's file IO is in one module (`viewer/sync.rs`) whose `SessionSync` owns the `Session` and takes `&mut App`, so unit tests drive it with a `TempDir` session and an `Instant` they control. Render changes are snapshot tests with `TestBackend`, as before.
-- **Subtracting `Duration`s panics if the result would be negative** (`Instant - Instant` saturates at zero, `Duration - Duration` doesn't). Use `saturating_sub` for every "time left" calculation, like plan 05 did for `SystemTime`.
+- **Subtracting `Duration`s panics if the result would be negative** (`Instant - Instant` saturates at zero, `Duration - Duration` doesn't). Use `saturating_sub` for every "time left" calculation, like plan 05 did for `SystemTime`. Pedantic clippy flags a plain `-` on `Duration`s (`unchecked_time_subtraction`), tests included, so write expected values as `Duration::from_millis(40)`, not `VIEW_DEBOUNCE - MS_60`.
 
 ## What this plan defers, and to where
 
@@ -449,14 +449,16 @@ New fields on `App`: `pub reload_error: Option<String>` and `highlight: Option<H
 2. Go back to the key column with `0`.
 3. The agent pushes a table with 3 columns.
 
-`visible_columns` keeps only columns with `index >= first_col`, so the grid would show the key column and nothing else until the user pressed `l`. Fix it where the scroll state lives, not in `set_table`: in `scroll_into_view`, before the pinned-column early return, clamp `first_col`:
+`visible_columns` keeps only columns with `index >= first_col`, so the grid would show the key column and nothing else until the user pressed `l`. Fix it where the scroll state lives, not in `set_table`: in `scroll_into_view`, before the pinned-column early return, start from the left again when `first_col` is past the last column:
 
 ```rust
-// A reload can leave fewer columns than `first_col`.
-self.first_col = self.first_col.min(self.table.columns.len().saturating_sub(1));
+// A reload can leave `first_col` past the last column.
+if self.first_col >= self.table.columns.len() {
+    self.first_col = 0;
+}
 ```
 
-Then `set_table` doesn't need to know about it, and any later change to the table gets it too.
+Then `set_table` doesn't need to know about it, and any later change to the table gets it too. Resetting to 0 rather than clamping to the last column shows the whole narrower table (key, `c1`, `c2`) instead of the key and `c2` with `c1` scrolled off; when the cursor is on another column, the rest of `scroll_into_view` brings it into view either way.
 
 Detail and Record modes need a cell under the cursor. A reload to a table with no columns (`{"rows": []}` or `[{}]`) while the cell popup is open would otherwise panic in `draw_detail`, and one with no rows would leave the record view showing a row that doesn't exist. Hence the mode check, which goes back to the grid. Command and Help modes need nothing: they read the cursor and table through the same fields on the next draw.
 
@@ -505,7 +507,7 @@ Implementation notes:
   - `set_table` recomputes widths: a reload that makes a cell much wider changes `visible_columns()` (or compare `widths` directly through a `#[cfg(test)]` accessor).
   - `set_table` with the cursor on the last row and a shorter table clamps the cursor and `first_row` (no panic, cursor on the new last row).
   - `set_table` from an empty table to `grid_app`'s table: no panic, every cell highlighted.
-  - `set_table` with the cursor on the pinned key column and `first_col` scrolled past the new table's last column: `first_col` is clamped (by `scroll_into_view`) and `visible_columns().len() > 1`.
+  - `set_table` with the cursor on the pinned key column and `first_col` scrolled past the new table's last column: `first_col` is back to 0 (by `scroll_into_view`) and all three columns are visible.
   - `set_table` in Detail mode, and in Record mode, with an empty table: the mode is `Grid` afterwards. In Detail mode with a table that still has cells: the mode stays `Detail`.
   - `set_table` sets `highlight`; `tick(now + 5s)` clears it; `tick(now + 4s)` doesn't.
   - `set_table` clears `reload_error`.
@@ -557,7 +559,7 @@ Plus the manual check above.
 - `src/session.rs`: `View` (with `pid: Option<u32>`), `pub VIEW_FILE` and `pub TABLE_FILE`, `Session::{write_view, read_view, viewer_open, table_fingerprint}`, `pub Fingerprint`, `pid_is_alive`. `Summary` unchanged.
 - `src/viewer/sync.rs` (new): `SessionSync::{start, tick, next_due, finish, write, changed_table}`, `Position::{of, view}`, `file_error`, `VIEW_DEBOUNCE`.
 - `src/viewer/diff.rs` (new): `same_cell`, `changed_cells`.
-- `src/viewer/app.rs`: `set_table` (with the mode check), the `first_col` clamp in `scroll_into_view`, `has_cell` (also used by `open_cell_view`), `row_id`/`column_name`, `reload_error`, `Highlight`, `is_highlighted`, `HIGHLIGHT_DURATION`, `tick` clears highlights, `set_message` is `pub(super)`, `Cursor: Hash`.
+- `src/viewer/app.rs`: `set_table` (with the mode check), the `first_col` reset in `scroll_into_view`, `has_cell` (also used by `open_cell_view`), `row_id`/`column_name`, `reload_error`, `Highlight`, `is_highlighted`, `HIGHLIGHT_DURATION`, `tick` clears highlights, `set_message` is `pub(super)`, `Cursor: Hash`.
 - `src/viewer/render.rs`: `cell_style` highlight, `status_line` reload error, two snapshots.
 - `src/viewer/theme.rs`: `changed`.
 - `src/viewer/mod.rs`: `run(table, session)` with `finish` after `ratatui::run`, `event_loop` with `SessionSync` and the poll timeout, `fit_viewport` rename, `mod sync; mod diff;`, `TICK` comment updated (it now does what it promised).
@@ -569,7 +571,7 @@ Plus the manual check above.
   - "Human CLI": `tv rm <id>… [--force]` (refuses a session whose viewer is open without it), and `tv ls` lists whether a viewer is open.
 - Two commits:
   1. `view.json: the viewer writes its cursor and pid; ls shows open viewers, rm --force, prune --closed` (ADI-220). Everything in Part 1: `View`, `SessionSync` with `start`/`tick`/`next_due`/`finish` (no reload yet), `has_cell`/`row_id`/`column_name`, `ls`/`rm`/`prune` changes. Each added item has a caller here.
-  2. `live reload: poll table.json, keep the cursor, highlight changes` (ADI-221). `Fingerprint`, `table_fingerprint`, `changed_table` and its match in `SessionSync::tick`, `diff.rs`, `set_table`, highlights, `reload_error`, theme and render changes.
+  2. `live reload: poll table.json, keep the cursor, highlight changes` (ADI-221). `Fingerprint`, `table_fingerprint`, `changed_table` and its match in `SessionSync::tick`, `diff.rs`, `set_table`, the `first_col` reset in `scroll_into_view`, highlights, `reload_error`, theme and render changes.
 
 ## Out of scope
 

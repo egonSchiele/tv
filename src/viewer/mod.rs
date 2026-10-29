@@ -1,8 +1,9 @@
 //! The terminal viewer: `app` holds state, `render` draws it, `layout` does
-//! the column math, `sync` does the session's file IO, and this
-//! module runs the event loop.
+//! the column math, `sync` does the session's file IO, `diff` compares a
+//! reloaded table with the old one, and this module runs the event loop.
 
 mod app;
+mod diff;
 pub mod layout;
 mod render;
 mod sync;
@@ -20,8 +21,9 @@ use app::App;
 use sync::SessionSync;
 use theme::Theme;
 
-/// How long to wait for a key before drawing again. Live reload (ADI-221)
-/// will check for file changes on the same tick.
+/// How long to wait for a key before drawing again. Each wake-up also checks
+/// whether `table.json` changed (`SessionSync::tick`), so a reload shows up
+/// within this long.
 const TICK: Duration = Duration::from_millis(250);
 
 pub fn run(table: Table, session: Session) -> anyhow::Result<()> {
