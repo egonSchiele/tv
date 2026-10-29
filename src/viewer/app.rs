@@ -12,7 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::diff;
 use super::layout::{self, VisibleColumn};
 use super::theme::Theme;
-use crate::comments::{self, Author, Event, Thread};
+use crate::comments::{self, Add, Author, Event, Thread};
 use crate::files;
 use crate::table::Table;
 
@@ -817,11 +817,11 @@ impl App {
             .iter()
             .rev()
             .find(|thread| thread.row_id == input.row_id && thread.column == input.column);
-        let event = match thread {
-            Some(thread) => Event::reply(id, Author::User, thread.id.clone(), text),
-            None => Event::comment(id, Author::User, input.row_id, input.column, text),
+        let add = match thread {
+            Some(thread) => Add::reply(id, Author::User, thread.id.clone(), text),
+            None => Add::comment(id, Author::User, input.row_id, input.column, text),
         };
-        self.pending.push(event);
+        self.pending.push(Event::Add(add));
     }
 
     /// Move to the next (or previous) cell with a thread, in reading order:

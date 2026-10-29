@@ -678,3 +678,144 @@ fn agent_focus_reports_the_viewers_cell() {
         (Value::Null, Value::Null)
     );
 }
+
+/// The last line of session directory `dir`'s comment log, parsed.
+fn last_log_line(dir: &Path) -> Value {
+    let log = fs::read_to_string(dir.join("comments.jsonl")).unwrap();
+    serde_json::from_str(log.lines().last().unwrap()).unwrap()
+}
+
+#[test]
+fn agent_comments_lists_what_awaits_a_reply() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    write_comments(&dir, &[USER_COMMENT]);
+    let threads = agent(home.path(), &["comments", "abc123"], "");
+    assert_eq!(threads.as_array().unwrap().len(), 1, "{threads}");
+    assert_eq!(threads[0]["id"], "c1");
+    assert_eq!(threads[0]["awaiting_reply"], true);
+
+    write_comments(&dir, &[USER_COMMENT, AGENT_REPLY]);
+    let threads = agent(home.path(), &["comments", "abc123"], "");
+    assert_eq!(threads, serde_json::json!([]));
+    let all = agent(home.path(), &["comments", "abc123", "--all"], "");
+    assert_eq!(all[0]["value"], "Bump serde to 1.0.229");
+    assert_eq!(all[0]["messages"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn agent_reply_answers_a_thread() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    write_comments(&dir, &[USER_COMMENT]);
+    let message = agent(home.path(), &["reply", "abc123", "c1", "on it"], "");
+    assert_eq!(message["author"], "agent");
+    assert_eq!(message["text"], "on it");
+    let id = message["id"].as_str().unwrap();
+    assert!(id.starts_with('c') && id.len() == 6, "{message}");
+    let logged = last_log_line(&dir);
+    assert_eq!(
+        (logged["id"].as_str(), logged["reply_to"].as_str()),
+        (Some(id), Some("c1"))
+    );
+    assert_eq!(
+        agent(home.path(), &["comments", "abc123"], ""),
+        serde_json::json!([])
+    );
+
+    // Text that starts with `-` is still text.
+    let message = agent(home.path(), &["reply", "abc123", "c1", "-1 is wrong"], "");
+    assert_eq!(message["text"], "-1 is wrong");
+}
+
+#[test]
+fn agent_reply_refuses_what_isnt_a_thread() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    write_comments(&dir, &[USER_COMMENT, AGENT_REPLY]);
+    let log = fs::read_to_string(dir.join("comments.jsonl")).unwrap();
+    let reply = |thread: &str, text: &str| {
+        agent_output(home.path(), &["reply", "abc123", thread, text], "")
+    };
+    assert_fails_with(&reply("c999", "hi"), "no thread \"c999\"");
+    // `c2` is a reply, not a thread.
+    assert_fails_with(&reply("c2", "hi"), "no thread \"c2\"");
+    assert_fails_with(&reply("c1", "  "), "the comment is empty");
+    assert_eq!(fs::read_to_string(dir.join("comments.jsonl")).unwrap(), log);
+}
+
+#[test]
+fn agent_comment_starts_a_thread() {
+    let home = tempfile::tempdir().unwrap();
+    write_session(home.path(), "abc123", &example());
+    let message = agent(
+        home.path(),
+        &[
+            "comment", "abc123", "--row", "403", "--col", "author", "look",
+        ],
+        "",
+    );
+    assert_eq!(
+        (message["author"].as_str(), message["text"].as_str()),
+        (Some("agent"), Some("look"))
+    );
+    let all = agent(home.path(), &["comments", "abc123", "--all"], "");
+    assert_eq!(all[0]["id"], message["id"]);
+    assert_eq!(
+        (all[0]["row_id"].as_str(), all[0]["column"].as_str()),
+        (Some("403"), Some("author"))
+    );
+    assert_eq!(all[0]["value"], "fatima");
+    assert_eq!(all[0]["awaiting_reply"], false);
+    // The agent wrote last, so nothing awaits a reply.
+    assert_eq!(
+        agent(home.path(), &["comments", "abc123"], ""),
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn agent_comment_on_a_missing_cell_writes_nothing() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    let comment = |row: &str, col: &str| {
+        agent_output(
+            home.path(),
+            &["comment", "abc123", "--row", row, "--col", col, "x"],
+            "",
+        )
+    };
+    assert_fails_with(&comment("412", "title"), "no row \"412\"");
+    assert_fails_with(&comment("404", "nope"), "no column \"nope\"");
+    assert!(!dir.join("comments.jsonl").exists());
+}
+
+#[test]
+fn agent_comment_on_an_unkeyed_table() {
+    let home = tempfile::tempdir().unwrap();
+    write_session(home.path(), "abc123", r#"[{"a": 1}, {"a": 2}]"#);
+    agent(
+        home.path(),
+        &["comment", "abc123", "--row", "#1", "--col", "a", "two?"],
+        "",
+    );
+    let all = agent(home.path(), &["comments", "abc123", "--all"], "");
+    assert_eq!(
+        (all[0]["row_id"].as_str(), all[0]["value"].as_u64()),
+        (Some("#1"), Some(2))
+    );
+}
+
+#[test]
+fn agent_comments_warns_about_skipped_lines_on_stderr() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    write_comments(&dir, &[USER_COMMENT, "not json"]);
+    let output = agent_output(home.path(), &["comments", "abc123"], "");
+    let threads: Value = serde_json::from_str(&succeeds(&output)).unwrap();
+    assert_eq!(threads[0]["id"], "c1");
+    assert_eq!(
+        stderr(&output),
+        "comments.jsonl: skipped lines that aren't events: 2\n"
+    );
+}

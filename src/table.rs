@@ -181,9 +181,13 @@ impl Table {
         (0..self.rows.len()).find(|&index| self.row_id(index) == row_id)
     }
 
+    /// The index of the column named `name`.
+    pub fn column_index(&self, name: &str) -> Option<usize> {
+        self.columns.iter().position(|column| column.name == name)
+    }
+
     pub fn key_column_index(&self) -> Option<usize> {
-        let key = self.key.as_deref()?;
-        self.columns.iter().position(|column| column.name == key)
+        self.column_index(self.key.as_deref()?)
     }
 }
 
@@ -573,6 +577,14 @@ mod tests {
         let unkeyed = Table::parse(r#"[{"a": 1}, {"a": 2}]"#).unwrap();
         assert_eq!(unkeyed.row_index("#1"), Some(1));
         assert_eq!(unkeyed.row_index("#2"), None);
+    }
+
+    #[test]
+    fn column_index_finds_a_column_by_name() {
+        let table = Table::from_path("examples/prs.json").unwrap();
+        assert_eq!(table.column_index("number"), Some(0));
+        assert_eq!(table.column_index("title"), Some(1));
+        assert_eq!(table.column_index("nope"), None);
     }
 
     #[test]

@@ -9,7 +9,8 @@ use clap::{Args, Subcommand};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::session::{Session, Sessions};
+use crate::comments::{self, Add, Author, Event, Log, Message, Thread};
+use crate::session::{COMMENTS_FILE, Session, Sessions};
 use crate::table::{Meta, Row, Table};
 use crate::time;
 
@@ -27,6 +28,29 @@ pub enum AgentCommand {
     Get { id: String },
     /// What the user's cursor is on.
     Focus { id: String },
+    /// Comment threads awaiting your reply. `--all` for every thread.
+    Comments {
+        id: String,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Reply to a thread.
+    Reply {
+        id: String,
+        thread: String,
+        #[arg(allow_hyphen_values = true)]
+        text: String,
+    },
+    /// Start a thread on a cell, to point the user at it.
+    Comment {
+        id: String,
+        #[arg(long)]
+        row: String,
+        #[arg(long)]
+        col: String,
+        #[arg(allow_hyphen_values = true)]
+        text: String,
+    },
     /// List sessions, most recently modified first.
     Sessions,
 }
@@ -82,6 +106,15 @@ pub fn run(sessions: &Sessions, command: &AgentCommand) -> anyhow::Result<()> {
         AgentCommand::Push { id, input } => serde_json::to_string(&push(sessions, id, input)?)?,
         AgentCommand::Get { id } => serde_json::to_string(&sessions.open(id)?.load_table()?)?,
         AgentCommand::Focus { id } => serde_json::to_string(&focus(sessions, id)?)?,
+        AgentCommand::Comments { id, all } => {
+            serde_json::to_string(&list_comments(sessions, id, *all)?)?
+        }
+        AgentCommand::Reply { id, thread, text } => {
+            serde_json::to_string(&reply(sessions, id, thread, text)?)?
+        }
+        AgentCommand::Comment { id, row, col, text } => {
+            serde_json::to_string(&comment(sessions, id, row, col, text)?)?
+        }
         AgentCommand::Sessions => serde_json::to_string(&list_sessions(sessions)?)?,
     };
     println!("{json}");
@@ -233,6 +266,105 @@ fn focus(sessions: &Sessions, id: &str) -> anyhow::Result<Focus> {
     Ok(Focus::at(&table, session.viewer_open(), row_id, column))
 }
 
+/// The session's comment log. Lines that were skipped are reported on
+/// stderr, since stdout is the JSON.
+fn read_log_and_warn(session: &Session) -> anyhow::Result<Log> {
+    let log = session.read_log()?;
+    if let Some(warning) = log.warning() {
+        eprintln!("{COMMENTS_FILE}: {warning}");
+    }
+    Ok(log)
+}
+
+fn list_comments(sessions: &Sessions, id: &str, all: bool) -> anyhow::Result<Vec<Thread>> {
+    let session = sessions.open(id)?;
+    let table = session.load_table()?;
+    let log = read_log_and_warn(&session)?;
+    let threads = comments::threads(&log.events, &table);
+    Ok(threads
+        .into_iter()
+        .filter(|thread| all || thread.awaiting_reply)
+        .collect())
+}
+
+/// `text` without surrounding whitespace, or an error if that leaves nothing.
+fn comment_text(text: &str) -> anyhow::Result<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        bail!("the comment is empty");
+    }
+    Ok(text.to_string())
+}
+
+fn reply(sessions: &Sessions, id: &str, thread: &str, text: &str) -> anyhow::Result<Message> {
+    let text = comment_text(text)?;
+    let session = sessions.open(id)?;
+    let table = session.load_table()?;
+    let log = read_log_and_warn(&session)?;
+    // `threads` would drop a reply to anything else without a word.
+    if !comments::threads(&log.events, &table)
+        .iter()
+        .any(|candidate| candidate.id == thread)
+    {
+        bail!("no thread \"{thread}\": `tv agent comments {id} --all` lists them");
+    }
+    let add = Add::reply(
+        comments::new_id(&log.events),
+        Author::Agent,
+        thread.to_string(),
+        text,
+    );
+    write_comment(&session, add)
+}
+
+fn comment(
+    sessions: &Sessions,
+    id: &str,
+    row_id: &str,
+    column: &str,
+    text: &str,
+) -> anyhow::Result<Message> {
+    let text = comment_text(text)?;
+    let session = sessions.open(id)?;
+    let table = session.load_table()?;
+    check_cell(&table, row_id, Some(column))?;
+    let log = read_log_and_warn(&session)?;
+    let add = Add::comment(
+        comments::new_id(&log.events),
+        Author::Agent,
+        row_id.to_string(),
+        column.to_string(),
+        text,
+    );
+    write_comment(&session, add)
+}
+
+/// Append `add` to the session's log, and return it as the message the user
+/// will see.
+fn write_comment(session: &Session, add: Add) -> anyhow::Result<Message> {
+    let message = Message::from(&add);
+    session.append_events(&[Event::Add(add)])?;
+    Ok(message)
+}
+
+/// An error unless `table` has row `row_id` and, if one is given, column
+/// `column`. `comment` and `goto` check before they write anything.
+fn check_cell(table: &Table, row_id: &str, column: Option<&str>) -> anyhow::Result<()> {
+    if table.row_index(row_id).is_none() {
+        let hint = match &table.key {
+            Some(key) => format!("row IDs are the values of the key column \"{key}\""),
+            None => "the table has no key, so row IDs are #0, #1, …".to_string(),
+        };
+        bail!("no row \"{row_id}\": {hint}");
+    }
+    if let Some(column) = column
+        && table.column_index(column).is_none()
+    {
+        bail!("no column \"{column}\"");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +411,29 @@ mod tests {
             serde_json::to_value(&focus).unwrap(),
             json!({"viewer_open": true, "row_id": null, "column": null, "value": null, "row": null})
         );
+    }
+
+    #[test]
+    fn check_cell_names_what_row_ids_are() {
+        let error = check_cell(&prs(), "1", None).unwrap_err().to_string();
+        assert_eq!(
+            error,
+            "no row \"1\": row IDs are the values of the key column \"number\""
+        );
+        let unkeyed = Table::parse(r#"[{"a": 1}]"#).unwrap();
+        let error = check_cell(&unkeyed, "0", None).unwrap_err().to_string();
+        assert!(error.ends_with("row IDs are #0, #1, …"), "{error}");
+        assert!(check_cell(&unkeyed, "#0", Some("a")).is_ok());
+        let error = check_cell(&unkeyed, "#0", Some("b"))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "no column \"b\"");
+    }
+
+    #[test]
+    fn comment_text_trims_and_refuses_blank() {
+        assert_eq!(comment_text("  hi\n").unwrap(), "hi");
+        assert!(comment_text(" \n ").is_err());
     }
 
     #[test]

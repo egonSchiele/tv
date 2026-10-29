@@ -271,11 +271,13 @@ By default lists only threads awaiting reply. `--all` lists every thread.
 
 ### `tv agent reply <id> <thread-id> <text>`
 
-Append an agent reply to a thread. Prints the new message.
+Append an agent reply to a thread. Prints the new message, in the shape `comments` gives messages: `{ "id", "author", "text", "ts" }`. Rejected if `<thread-id>` isn't a thread (a reply's ID, a deleted thread, or a typo), since a reply to anything else would be dropped.
+
+Comment text is one argument, so quote it. It's trimmed, and empty text is rejected. If the log has lines that don't parse, `comments`, `reply` and `comment` say so on stderr; stdout is still the JSON.
 
 ### `tv agent comment <id> --row <row-id> --col <column> <text>`
 
-Start a thread on a cell, for when the agent wants to point the human at something. The human finds it with `]`.
+Start a thread on a cell, for when the agent wants to point the human at something. The human finds it with `]`. Prints the new message, whose `id` is the new thread's ID. Rejected, with nothing written, if the table has no such row or column.
 
 ### `tv agent sessions`
 
