@@ -412,6 +412,24 @@ impl App {
         &self.table
     }
 
+    /// Whether there's a cell under the cursor: the table has at least one
+    /// row and one column. Detail and Record modes need one; `draw_detail`
+    /// indexes the cursor's column.
+    pub fn has_cell(&self) -> bool {
+        !self.table.rows.is_empty() && !self.table.columns.is_empty()
+    }
+
+    /// The cursor row's ID (`Table::row_id`), or `None` without a cell.
+    pub fn row_id(&self) -> Option<String> {
+        self.has_cell().then(|| self.table.row_id(self.cursor.row))
+    }
+
+    /// The cursor column's name, or `None` without a cell.
+    pub fn column_name(&self) -> Option<String> {
+        self.has_cell()
+            .then(|| self.table.columns[self.cursor.col].name.clone())
+    }
+
     /// Record the grid's size and scroll so the cursor stays visible. The
     /// event loop calls this before every draw, so resizes are handled here.
     pub fn set_viewport(&mut self, width: u16, height: u16) {
@@ -514,12 +532,12 @@ impl App {
 
     /// Open a view of the cursor's cell or row, if there is one.
     fn open_cell_view(&mut self, mode: Mode) {
-        if self.table.rows.is_empty() {
-            self.set_message("no rows".to_string());
-        } else if self.table.columns.is_empty() {
-            self.set_message("no columns".to_string());
-        } else {
+        if self.has_cell() {
             self.mode = mode;
+        } else if self.table.rows.is_empty() {
+            self.set_message("no rows".to_string());
+        } else {
+            self.set_message("no columns".to_string());
         }
     }
 
@@ -535,7 +553,7 @@ impl App {
         }
     }
 
-    fn set_message(&mut self, text: String) {
+    pub(super) fn set_message(&mut self, text: String) {
         self.message = Some(Message {
             text,
             shown_at: Instant::now(),
@@ -1136,6 +1154,19 @@ mod tests {
         press_char(&mut app, 'r');
         assert_eq!(app.mode, Mode::Grid);
         assert_eq!(message(&app), Some("no columns"));
+    }
+
+    #[test]
+    fn the_cursor_cell_is_named_by_row_id_and_column() {
+        let mut app = grid_app(Some("c0"));
+        app.cursor = Cursor { row: 3, col: 2 };
+        assert_eq!(app.row_id().as_deref(), Some("r3c0"));
+        assert_eq!(app.column_name().as_deref(), Some("c2"));
+
+        for json in [r#"{"columns": [{"name": "a"}], "rows": []}"#, "[{}]"] {
+            let app = App::new(Table::parse(json).unwrap());
+            assert_eq!((app.row_id(), app.column_name()), (None, None), "{json}");
+        }
     }
 
     #[test]

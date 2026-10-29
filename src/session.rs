@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, bail};
+use serde::{Deserialize, Serialize};
 
+use crate::files;
 use crate::table::Table;
 
 /// Session IDs are `ID_LEN` characters from `ID_ALPHABET`, like `k3f9x2`:
@@ -22,13 +24,16 @@ use crate::table::Table;
 const ID_LEN: usize = 6;
 const ID_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 
-const TABLE_FILE: &str = "table.json";
+/// The files the viewer reads and writes. Public because the viewer names
+/// them in its status-line errors.
+pub const TABLE_FILE: &str = "table.json";
+pub const VIEW_FILE: &str = "view.json";
 
 /// Every file a session directory may hold. `remove` deletes exactly these
 /// and nothing else; add a name here when a new file joins the layout.
 /// `goto.json` is ADI-228's cursor request from the agent; it's listed now so
 /// `tv rm` doesn't refuse a session with a pending goto.
-const SESSION_FILES: &[&str] = &[TABLE_FILE, "view.json", "comments.jsonl", "goto.json"];
+const SESSION_FILES: &[&str] = &[TABLE_FILE, VIEW_FILE, "comments.jsonl", "goto.json"];
 
 /// The sessions root. Holds the path only; every method does its IO on call.
 pub struct Sessions {
@@ -41,6 +46,22 @@ pub struct Sessions {
 pub struct Session {
     id: String,
     dir: PathBuf,
+}
+
+/// What the viewer tells the agent: where its cursor is and which process it
+/// is. Written by the viewer, read by `tv ls` and the agent CLI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct View {
+    /// The viewer's process while it runs; `None` after it quits normally,
+    /// so a pid the system reuses later can't make the session look open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
+    /// `None` when the table has no cell to point at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
+    pub updated_at: String, // RFC 3339, from `time::rfc3339`
 }
 
 /// What `tv ls` shows about a session.
@@ -233,8 +254,40 @@ impl Session {
         table.save(&self.dir.join(TABLE_FILE))
     }
 
-    /// The newest mtime of any file in the directory. Covers `comments.jsonl`
-    /// and `view.json` once they exist, with no change here.
+    /// Write `view.json` atomically (temp file + rename, like `table.json`).
+    pub fn write_view(&self, view: &View) -> anyhow::Result<()> {
+        files::write_json(&self.dir.join(VIEW_FILE), view)
+    }
+
+    /// `view.json`, or `None` if no viewer has written one. A file that
+    /// doesn't parse is an error, like a broken `table.json`.
+    pub fn read_view(&self) -> anyhow::Result<Option<View>> {
+        let path = self.dir.join(VIEW_FILE);
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(error).with_context(|| format!("reading {}", path.display()));
+            }
+        };
+        let view =
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        Ok(Some(view))
+    }
+
+    /// Whether a viewer has this session open: `view.json` names a pid that
+    /// is alive. A missing `view.json`, one without a pid, or one that can't
+    /// be read counts as closed. Only the viewer writes it, atomically, so an
+    /// unreadable one means a hand edit, and `ls` and `prune` must keep
+    /// working through that.
+    pub fn viewer_open(&self) -> bool {
+        let pid = self.read_view().ok().flatten().and_then(|view| view.pid);
+        pid.is_some_and(pid_is_alive)
+    }
+
+    /// The newest mtime of any file in the directory. Covers `view.json`,
+    /// and `comments.jsonl` once it exists, with no change here. So using
+    /// the viewer counts as modifying the session.
     pub fn modified_at(&self) -> anyhow::Result<SystemTime> {
         newest_mtime(&self.dir).with_context(|| format!("reading {}", self.dir.display()))
     }
@@ -251,6 +304,29 @@ impl Session {
             modified_at: self.modified_at()?,
         })
     }
+}
+
+/// `kill(pid, 0)`, which sends no signal: `Ok` means alive, `EPERM` means
+/// alive but someone else's, `ESRCH` means gone. A pid that doesn't fit an
+/// `i32` is nobody, and `Pid::from_raw` refuses 0, which `kill` would take to
+/// mean our own process group.
+#[cfg(unix)]
+fn pid_is_alive(pid: u32) -> bool {
+    use rustix::io::Errno;
+    use rustix::process::{Pid, test_kill_process};
+    let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+        return false;
+    };
+    match test_kill_process(pid) {
+        Ok(()) | Err(Errno::PERM) => true, // EPERM: alive, owned by another user
+        Err(_) => false,                   // ESRCH: no such process
+    }
+}
+
+/// No viewer-open detection off Unix: every session counts as closed.
+#[cfg(not(unix))]
+fn pid_is_alive(_pid: u32) -> bool {
+    false
 }
 
 /// Every entry in session directory `dir`, or an error, before anything is
@@ -365,6 +441,19 @@ mod tests {
 
     fn ids(sessions: &[Session]) -> Vec<&str> {
         sessions.iter().map(Session::id).collect()
+    }
+
+    /// Fits an `i32`, but no system hands it out (Linux caps pids at
+    /// 4,194,304 and macOS at 99,998), so `kill` says `ESRCH`.
+    const NO_SUCH_PID: u32 = 2_147_483_647;
+
+    fn view(pid: Option<u32>) -> View {
+        View {
+            pid,
+            row_id: Some("412".to_string()),
+            column: Some("title".to_string()),
+            updated_at: "2026-10-28T19:02:11Z".to_string(),
+        }
     }
 
     fn set_table_mtime(session: &Session, time: SystemTime) {
@@ -515,6 +604,16 @@ mod tests {
     }
 
     #[test]
+    fn remove_deletes_a_view_json_too() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        session.write_view(&view(None)).unwrap();
+        let dir = session.dir.clone();
+        sessions.remove(session).unwrap();
+        assert!(!dir.exists());
+    }
+
+    #[test]
     fn remove_deletes_a_leftover_temp_file() {
         let (_dir, sessions) = sessions();
         let session = sessions.create(&table()).unwrap();
@@ -572,6 +671,63 @@ mod tests {
         assert_eq!(summary.title.as_deref(), Some("Things"));
         assert_eq!((summary.rows, summary.columns), (2, 2));
         assert_eq!(summary.modified_at, session.modified_at().unwrap());
+    }
+
+    #[test]
+    fn view_round_trips_and_leaves_out_missing_fields() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        assert_eq!(session.read_view().unwrap(), None);
+
+        session.write_view(&view(Some(7))).unwrap();
+        assert_eq!(session.read_view().unwrap(), Some(view(Some(7))));
+
+        let empty = View {
+            pid: None,
+            row_id: None,
+            column: None,
+            updated_at: "2026-10-28T19:02:11Z".to_string(),
+        };
+        session.write_view(&empty).unwrap();
+        assert_eq!(session.read_view().unwrap(), Some(empty));
+        let text = fs::read_to_string(session.dir.join(VIEW_FILE)).unwrap();
+        for field in ["pid", "row_id", "column"] {
+            assert!(!text.contains(field), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_broken_view_json_is_an_error_and_counts_as_closed() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        fs::write(session.dir.join(VIEW_FILE), "not json").unwrap();
+        let message = format!("{:#}", session.read_view().unwrap_err());
+        assert!(message.starts_with("parsing "), "{message}");
+        assert!(!session.viewer_open());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn viewer_open_asks_whether_the_pid_is_alive() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        assert!(!session.viewer_open()); // no view.json yet
+        let cases = [
+            (Some(std::process::id()), true), // this test process
+            (None, false),                    // the viewer quit normally
+            (Some(u32::MAX), false),          // doesn't fit an i32
+            (Some(NO_SUCH_PID), false),
+        ];
+        for (pid, open) in cases {
+            session.write_view(&view(pid)).unwrap();
+            assert_eq!(session.viewer_open(), open, "{pid:?}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_0_is_never_asked_about() {
+        assert!(!pid_is_alive(0));
     }
 
     #[test]

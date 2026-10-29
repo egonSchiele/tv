@@ -39,10 +39,13 @@ enum Command {
     Open { target: Option<String> },
     /// List sessions, most recent first.
     Ls,
-    /// Delete sessions.
+    /// Delete sessions. Refuses a session whose viewer is open.
     Rm {
         #[arg(required = true)]
         ids: Vec<String>,
+        /// Delete even if a viewer has the session open.
+        #[arg(long)]
+        force: bool,
     },
     /// Write a session's table, comments included, to a JSON file.
     Save { id: String, path: String },
@@ -55,11 +58,15 @@ enum Command {
 
 #[derive(Subcommand)]
 enum SessionCommand {
-    /// Delete sessions that match every given filter. At least one filter is required.
+    /// Delete sessions that match every given filter. At least one filter is
+    /// required. A session whose viewer is open is never deleted.
     Prune {
         /// Modified longer ago than this, e.g. `7d` or `12h`.
         #[arg(long, value_parser = parse_duration)]
         older_than: Option<Duration>,
+        /// Only sessions whose viewer is closed.
+        #[arg(long)]
+        closed: bool,
         /// Print what would be deleted without deleting it.
         #[arg(long)]
         dry_run: bool,
@@ -150,7 +157,7 @@ fn open(sessions: &Sessions, target: Target) -> anyhow::Result<()> {
     // For a new session this parses the same bytes again. It's cheap, and
     // it means every case ends the same way.
     let table = session.load_table()?;
-    viewer::run(table, session.id().to_string())
+    viewer::run(table, session)
 }
 
 /// For `ls` and `prune` output when `table.json` doesn't parse.
@@ -171,23 +178,28 @@ fn ls(sessions: &Sessions) -> anyhow::Result<()> {
     // TITLE goes last: it's the only free text, so a long one wraps its own
     // line instead of pushing the other columns off every row.
     let mut rows = vec![
-        ["ID", "ROWS×COLS", "MODIFIED", "TITLE"]
+        ["ID", "ROWS×COLS", "VIEWER", "MODIFIED", "TITLE"]
             .map(String::from)
             .to_vec(),
     ];
     for session in &list {
+        // Asked here rather than in `summary`, so a broken `table.json` (no
+        // summary) shows it the same way.
+        let viewer = if session.viewer_open() { "open" } else { "-" };
         // One broken `table.json` shouldn't hide the rest: `ls` is how you
         // find its ID to `tv rm` it.
         rows.push(match session.summary() {
             Ok(summary) => vec![
                 summary.id,
                 format!("{}×{}", summary.rows, summary.columns),
+                viewer.to_string(),
                 time::rfc3339(summary.modified_at),
                 title_text(summary.title.as_deref()),
             ],
             Err(_) => vec![
                 session.id().to_string(),
                 "?".to_string(),
+                viewer.to_string(),
                 session
                     .modified_at()
                     .map_or_else(|_| "?".to_string(), time::rfc3339),
@@ -229,9 +241,10 @@ fn format_table(rows: &[Vec<String>]) -> String {
     text
 }
 
-/// `tv rm`. Opens every ID before deleting any, so a typo in the second
+/// `tv rm`. Opens every ID, and without `force` checks that none has a
+/// viewer open, before deleting any: a typo or an open viewer in the second
 /// fails before the first is gone.
-fn rm(sessions: &Sessions, ids: &[String]) -> anyhow::Result<()> {
+fn rm(sessions: &Sessions, ids: &[String], force: bool) -> anyhow::Result<()> {
     let mut unique: Vec<&str> = Vec::new();
     for id in ids {
         if !unique.contains(&id.as_str()) {
@@ -242,6 +255,12 @@ fn rm(sessions: &Sessions, ids: &[String]) -> anyhow::Result<()> {
         .into_iter()
         .map(|id| sessions.open(id))
         .collect::<anyhow::Result<Vec<_>>>()?;
+    if !force && let Some(open) = found.iter().find(|session| session.viewer_open()) {
+        bail!(
+            "session {} has a viewer open; close it or use --force",
+            open.id()
+        );
+    }
     for session in found {
         let id = session.id().to_string();
         sessions.remove(session)?;
@@ -263,43 +282,53 @@ fn save(sessions: &Sessions, id: &str, path: &str) -> anyhow::Result<()> {
 /// `tv session prune`'s filters, as data. A session is pruned if it matches
 /// every filter that is set.
 struct PruneFilter {
-    older_than: Option<Duration>, // ADI-220 adds `closed: bool`
+    older_than: Option<Duration>,
+    closed: bool,
 }
 
 impl PruneFilter {
     fn is_empty(&self) -> bool {
-        self.older_than.is_none()
+        self.older_than.is_none() && !self.closed
     }
 
-    /// True when a session last modified at `modified_at` matches every
-    /// filter that is set. ADI-220 adds a `viewer_open: bool` parameter.
-    fn matches(&self, modified_at: SystemTime, now: SystemTime) -> bool {
+    /// True when a session last modified at `modified_at`, whose viewer is
+    /// open or not, matches every filter that is set.
+    fn matches(&self, modified_at: SystemTime, viewer_open: bool, now: SystemTime) -> bool {
         // Compare ages: `now - limit` would panic for a huge limit. A future
         // mtime has age zero, and `>=` makes `0d` match everything.
         let age = now.duration_since(modified_at).unwrap_or_default();
-        self.older_than.is_none_or(|limit| age >= limit)
+        let old_enough = self.older_than.is_none_or(|limit| age >= limit);
+        let closed_enough = !self.closed || !viewer_open;
+        old_enough && closed_enough
     }
 }
 
-/// `tv session prune`. Decides on mtimes alone, so a session whose
-/// `table.json` is broken (the one that most needs cleaning up) can still be
-/// pruned; the title is only for the printed line.
+/// `tv session prune`. Decides on mtimes and `view.json` alone, so a session
+/// whose `table.json` is broken (the one that most needs cleaning up) can
+/// still be pruned; the title is only for the printed line. A session whose
+/// viewer is open is skipped whatever the filters: a bulk delete shouldn't
+/// pull a table out from under someone, so there's no `--force` here.
 fn prune(sessions: &Sessions, filter: &PruneFilter, dry_run: bool) -> anyhow::Result<()> {
     if filter.is_empty() {
-        bail!("give a filter: --older-than <duration>");
+        bail!("give a filter: --older-than <duration> and/or --closed");
     }
     let now = SystemTime::now();
-    let mut matched = 0;
+    let mut pruned = 0;
     for session in sessions.list()? {
-        if !filter.matches(session.modified_at()?, now) {
+        let viewer_open = session.viewer_open();
+        if !filter.matches(session.modified_at()?, viewer_open, now) {
             continue;
         }
-        matched += 1;
+        let id = session.id().to_string();
+        if viewer_open {
+            println!("skipped {id}  (viewer open)");
+            continue;
+        }
+        pruned += 1;
         let title = session.load_table().map_or_else(
             |_| UNREADABLE.to_string(),
             |table| title_text(table.title.as_deref()),
         );
-        let id = session.id().to_string();
         if dry_run {
             println!("would remove {id}  {title}");
         } else {
@@ -307,7 +336,8 @@ fn prune(sessions: &Sessions, filter: &PruneFilter, dry_run: bool) -> anyhow::Re
             println!("removed {id}  {title}");
         }
     }
-    if matched == 0 {
+    // Skipped sessions don't count, so this prints after `skipped` lines too.
+    if pruned == 0 {
         println!("nothing to prune");
     }
     Ok(())
@@ -324,18 +354,20 @@ fn main() -> anyhow::Result<()> {
     match &cli.command {
         None | Some(Command::Open { .. }) => open(&sessions, Target::parse(cli.argument())),
         Some(Command::Ls) => ls(&sessions),
-        Some(Command::Rm { ids }) => rm(&sessions, ids),
+        Some(Command::Rm { ids, force }) => rm(&sessions, ids, *force),
         Some(Command::Save { id, path }) => save(&sessions, id, path),
         Some(Command::Session {
             command:
                 SessionCommand::Prune {
                     older_than,
+                    closed,
                     dry_run,
                 },
         }) => prune(
             &sessions,
             &PruneFilter {
                 older_than: *older_than,
+                closed: *closed,
             },
             *dry_run,
         ),
@@ -404,10 +436,15 @@ mod tests {
     fn session_commands_parse() {
         assert!(matches!(parsed_command(&["tv", "ls"]), Command::Ls));
 
-        let Command::Rm { ids } = parsed_command(&["tv", "rm", "a", "b"]) else {
+        let Command::Rm { ids, force } = parsed_command(&["tv", "rm", "a", "b"]) else {
             panic!("expected rm");
         };
         assert_eq!(ids, ["a", "b"]);
+        assert!(!force);
+        let Command::Rm { force, .. } = parsed_command(&["tv", "rm", "--force", "a"]) else {
+            panic!("expected rm");
+        };
+        assert!(force);
 
         let Command::Save { id, path } = parsed_command(&["tv", "save", "k3f9x2", "out.json"])
         else {
@@ -420,6 +457,7 @@ mod tests {
             command:
                 SessionCommand::Prune {
                     older_than,
+                    closed,
                     dry_run,
                 },
         } = parsed_command(&args)
@@ -427,7 +465,16 @@ mod tests {
             panic!("expected session prune");
         };
         assert_eq!(older_than, Some(7 * DAY));
+        assert!(!closed);
         assert!(dry_run);
+
+        let Command::Session {
+            command: SessionCommand::Prune { closed, .. },
+        } = parsed_command(&["tv", "session", "prune", "--closed"])
+        else {
+            panic!("expected session prune");
+        };
+        assert!(closed);
     }
 
     #[test]
@@ -454,28 +501,53 @@ mod tests {
         }
     }
 
+    fn older_than(limit: Duration) -> PruneFilter {
+        PruneFilter {
+            older_than: Some(limit),
+            closed: false,
+        }
+    }
+
     #[test]
     fn prune_filter_compares_ages() {
         let now = SystemTime::now();
-        let week = PruneFilter {
-            older_than: Some(7 * DAY),
-        };
-        assert!(week.matches(now - 8 * DAY, now));
-        assert!(!week.matches(now - 6 * DAY, now));
-        assert!(!week.matches(now + DAY, now)); // a future mtime has age zero
-
-        let zero = PruneFilter {
-            older_than: Some(Duration::ZERO),
-        };
-        assert!(zero.matches(now, now));
-
-        let forever = PruneFilter {
-            older_than: Some(Duration::MAX),
-        };
-        assert!(!forever.matches(now - 8 * DAY, now));
-
-        assert!(PruneFilter { older_than: None }.is_empty());
+        let week = older_than(7 * DAY);
+        assert!(week.matches(now - 8 * DAY, false, now));
+        assert!(!week.matches(now - 6 * DAY, false, now));
+        assert!(!week.matches(now + DAY, false, now)); // a future mtime has age zero
+        assert!(older_than(Duration::ZERO).matches(now, false, now));
+        assert!(!older_than(Duration::MAX).matches(now - 8 * DAY, false, now));
         assert!(!week.is_empty());
+    }
+
+    #[test]
+    fn prune_filter_closed() {
+        let now = SystemTime::now();
+        let closed = PruneFilter {
+            older_than: None,
+            closed: true,
+        };
+        assert!(closed.matches(now, false, now));
+        assert!(!closed.matches(now, true, now));
+        assert!(!closed.is_empty());
+
+        // Without `--closed`, whether the viewer is open doesn't matter here;
+        // `prune` skips open sessions on its own.
+        assert!(older_than(Duration::ZERO).matches(now, true, now));
+
+        let both = PruneFilter {
+            older_than: Some(7 * DAY),
+            closed: true,
+        };
+        assert!(both.matches(now - 8 * DAY, false, now));
+        assert!(!both.matches(now - 8 * DAY, true, now));
+        assert!(!both.matches(now - 6 * DAY, false, now));
+
+        let none = PruneFilter {
+            older_than: None,
+            closed: false,
+        };
+        assert!(none.is_empty());
     }
 
     fn row(cells: &[&str]) -> Vec<String> {

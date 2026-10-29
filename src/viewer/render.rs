@@ -416,7 +416,7 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use crate::viewer::app::Cursor;
-    use crate::viewer::sync_viewport;
+    use crate::viewer::fit_viewport;
     use crate::viewer::theme::Theme;
 
     fn app(json: &str) -> App {
@@ -429,7 +429,7 @@ mod tests {
 
     /// Draw `app` the way the event loop does: viewport first, then the frame.
     fn render(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
-        sync_viewport(app, Rect::new(0, 0, width, height));
+        fit_viewport(app, Rect::new(0, 0, width, height));
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| draw(frame, app)).unwrap();
         terminal

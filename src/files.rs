@@ -1,8 +1,19 @@
-//! File helpers shared by saving (`:w`) and, later, sessions.
+//! File helpers shared by saving (`:w`) and sessions.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+
+use anyhow::Context;
+use serde::Serialize;
+
+/// Write `value` as pretty JSON with a trailing newline, atomically. Tables
+/// (`Table::save`) and `view.json` both go through here.
+pub fn write_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
+    let mut json = serde_json::to_string_pretty(value)?;
+    json.push('\n');
+    write_atomic(path, json.as_bytes()).with_context(|| format!("writing {}", path.display()))
+}
 
 /// Write `contents` to `path` so readers see the old file or the new one,
 /// never a partial write: write a temp file in the same directory, flush it
