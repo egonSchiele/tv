@@ -25,7 +25,7 @@ pub struct SessionSync {
     /// When the cursor first moved away from `written`, if it has.
     moved_at: Option<Instant>,
     /// `table.json` as of the last look, so a tick only parses it when it
-    /// changed. `None` if it couldn't be read.
+    /// changed. `None` before the first look, or if it couldn't be read.
     seen: Option<Fingerprint>,
 }
 
@@ -62,14 +62,15 @@ impl SessionSync {
     /// opens.
     pub fn start(session: Session, app: &mut App) -> SessionSync {
         let position = Position::of(app);
-        // `main` loaded the table moments ago, so this is the version on
-        // screen. If it can't be read now, the first tick says so.
-        let seen = session.table_fingerprint().ok();
         let mut sync = SessionSync {
             session,
             written: position.clone(),
             moved_at: None,
-            seen,
+            // Not the current fingerprint: `main` loaded the table before
+            // this, and a push in between would be recorded as seen but never
+            // shown (the wrong order; see `changed_table`). So the first tick
+            // parses `table.json` again. Unchanged, it highlights nothing.
+            seen: None,
         };
         sync.write(app, position);
         sync
@@ -126,7 +127,13 @@ impl SessionSync {
         // Fingerprint first, then read. A write landing between the two costs
         // one extra reload next tick; the other order could record the new
         // fingerprint with the old contents and miss the change.
-        let fingerprint = self.session.table_fingerprint()?;
+        // Forget the last fingerprint when the file can't be read, so whatever
+        // comes back counts as new, even the same file with the same mtime
+        // and size (`mv` away and back, `cp -p`): that clears the error.
+        let fingerprint = self
+            .session
+            .table_fingerprint()
+            .inspect_err(|_| self.seen = None)?;
         if Some(fingerprint) == self.seen {
             return Ok(None);
         }
@@ -183,7 +190,7 @@ mod tests {
     /// A session in a temp dir and a viewer started on it. Keep the
     /// `TempDir`: dropping it deletes the directory.
     struct Fixture {
-        _dir: tempfile::TempDir,
+        dir: tempfile::TempDir,
         sessions: Sessions,
         id: String,
         view_path: PathBuf,
@@ -201,7 +208,7 @@ mod tests {
         let mut app = App::new(table);
         let sync = SessionSync::start(session, &mut app);
         Fixture {
-            _dir: dir,
+            dir,
             sessions,
             id,
             view_path,
@@ -336,7 +343,22 @@ mod tests {
     }
 
     #[test]
-    fn a_tick_right_after_start_reloads_nothing() {
+    fn a_push_just_before_start_is_still_shown() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = Sessions::new(dir.path().join("sessions"));
+        let session = sessions.create(&table()).unwrap();
+        let mut app = App::new(session.load_table().unwrap()); // what `open` and `run` do
+        let pushed =
+            Table::parse(r#"{"key": "id", "rows": [{"id": "a", "n": 10}, {"id": "b", "n": 2}]}"#)
+                .unwrap();
+        session.write_table(&pushed).unwrap(); // the agent's push
+        let mut sync = SessionSync::start(session, &mut app);
+        sync.tick(&mut app, Instant::now());
+        assert_eq!(app.table().rows, pushed.rows);
+    }
+
+    #[test]
+    fn a_tick_right_after_start_highlights_nothing() {
         let mut fixture = start(table());
         fixture.sync.tick(&mut fixture.app, Instant::now());
         assert!(!fixture.app.is_highlighted(0, 0));
@@ -372,6 +394,22 @@ mod tests {
         assert_eq!(fixture.sync.seen, Some(current));
 
         fixture.sync.session.write_table(&table()).unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.reload_error, None);
+    }
+
+    #[test]
+    fn the_same_file_coming_back_clears_the_error() {
+        let mut fixture = start(table());
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        // Away and back with `rename`, which keeps the mtime and size, so
+        // the fingerprint is the one already seen.
+        let table_path = fixture.view_path.with_file_name(TABLE_FILE);
+        let moved = fixture.dir.path().join("moved.json");
+        fs::rename(&table_path, &moved).unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert!(fixture.app.reload_error.is_some());
+        fs::rename(&moved, &table_path).unwrap();
         fixture.sync.tick(&mut fixture.app, Instant::now());
         assert_eq!(fixture.app.reload_error, None);
     }

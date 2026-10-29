@@ -379,7 +379,7 @@ impl Session {
 
 `Fingerprint` is `pub` (with private fields) because `sync.rs` stores one, and a `pub fn` returning a private type trips the `private_interfaces` warning, which `make lint` turns into an error.
 
-`SessionSync` gains `seen: Option<Fingerprint>`, set in `start` (the table was loaded moments before, by `main`), and one method that answers "is there a new table?":
+`SessionSync` gains `seen: Option<Fingerprint>`, and one method that answers "is there a new table?". `start` sets `seen` to `None`, not to the current fingerprint: `main` loaded the table before `start` runs, so reading the fingerprint there is the wrong order described in `changed_table`. A push landing between the two would be recorded as seen while the screen shows the old table, and nothing would say so. With `None`, the first tick parses `table.json` again; when nothing changed, `set_table` highlights nothing, so the screen looks the same. (Reading the fingerprint in `open` before `load_table` and passing it to `viewer::run` would skip that parse, at the cost of one more parameter.)
 
 ```rust
 impl SessionSync {
@@ -390,7 +390,12 @@ impl SessionSync {
         // Fingerprint first, then read. A write landing between the two
         // costs one extra reload next tick; the other order could record the
         // new fingerprint with the old contents and miss the change.
-        let fingerprint = self.session.table_fingerprint()?;
+        // Forget the last fingerprint when the file can't be read, so
+        // whatever comes back counts as new.
+        let fingerprint = self
+            .session
+            .table_fingerprint()
+            .inspect_err(|_| self.seen = None)?;
         if Some(fingerprint) == self.seen {
             return Ok(None);
         }
@@ -413,6 +418,7 @@ match self.changed_table() {
 That is the only line that sets `reload_error`. Whatever failed, stat, read or parse, the message comes from `file_error`, the same helper the `view.json` errors use: `table.json: ` and the underlying error without its context chain: `table.json: No such file or directory (os error 2)`, `table.json: expected value at line 1 column 1`. The chain would start with the session's full path (about 50 characters, after the 37 of ` row 2/38  col 4/9  ·  reload failed: `), which on an 80- or 100-column terminal pushes the line number, the one part you need, off the screen. The viewer only reloads one file, so the path says nothing new. `tv ls` and `tv save` still print the full chain.
 
 - The error stays on screen (below) until a reload succeeds; `set_table` clears it.
+- A stat error forgets `seen`. Otherwise the same file coming back with the same mtime and size (`mv table.json x && mv x table.json`, `cp -p`, a restore from backup) would match the old fingerprint, nothing would reload, and `reload failed` would stay on the status line over the right table.
 - `table.json` missing (`tv rm --force` while open) is a stat error like any other: the last table stays, the viewer keeps running. Nothing in the poll exits the viewer. Readers never see `table.json` missing during a normal write, because `rename` replaces it atomically.
 
 ### `App::set_table`
@@ -516,7 +522,9 @@ Implementation notes:
   - `reload_error_status`: `reload_error` set, the status line shows it in place of the hints.
   - A test that a Detail-mode app reloaded with an empty table renders without panicking.
 - **`viewer/sync.rs`**, with a real `Session` in a `TempDir`:
-  - `tick` right after `start` reloads nothing (same fingerprint).
+  - `tick` right after `start` highlights nothing (it reparses the same table).
+  - A push between loading the table and `start` is shown on the first tick: `App::new(session.load_table())`, then `write_table`, then `start` and `tick`.
+  - After `table.json` is renamed away and back (`fs::rename` keeps the mtime and size), `tick` sets `reload_error` and then clears it.
   - After `session.write_table(&changed)`, `tick` replaces `app.table()` and sets a highlight.
   - After writing `not json` to `table.json` by hand, `tick` leaves `app.table()` unchanged and sets `reload_error` to `table.json: expected ident at line 1 column 2` (starts with `table.json: ` and has no path); after that, `seen` equals the file's current fingerprint, which is what stops a re-parse every tick. After `write_table` with a good table, `tick` clears `reload_error`.
   - After the session is removed through `Sessions::remove` (the second-handle trick above), `tick` sets `reload_error` containing `No such file` and the table stays. Tests never call `fs::remove_file` themselves: the clippy ban covers test code too, and the two exempted sites stay the only ones.
