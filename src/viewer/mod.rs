@@ -2,7 +2,7 @@
 //! the column math, and this module runs the event loop.
 
 mod app;
-mod layout;
+pub mod layout;
 mod render;
 mod theme;
 

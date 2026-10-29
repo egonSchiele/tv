@@ -1,0 +1,7 @@
+# Every delete in the crate is behind an explicit `expect`, so
+# `grep disallowed_methods` lists them all. Recursive delete is banned outright.
+disallowed-methods = [
+    { path = "std::fs::remove_dir_all", reason = "never delete recursively; remove known files, then remove_dir (see session.rs)" },
+    { path = "std::fs::remove_dir", reason = "only Sessions::remove deletes directories" },
+    { path = "std::fs::remove_file", reason = "only Sessions::remove and files::write_atomic delete files" },
+]

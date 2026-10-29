@@ -24,6 +24,12 @@ const ID_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 
 const TABLE_FILE: &str = "table.json";
 
+/// Every file a session directory may hold. `remove` deletes exactly these
+/// and nothing else; add a name here when a new file joins the layout.
+/// `goto.json` is ADI-228's cursor request from the agent; it's listed now so
+/// `tv rm` doesn't refuse a session with a pending goto.
+const SESSION_FILES: &[&str] = &[TABLE_FILE, "view.json", "comments.jsonl", "goto.json"];
+
 /// The sessions root. Holds the path only; every method does its IO on call.
 pub struct Sessions {
     root: PathBuf, // …/sessions
@@ -35,6 +41,15 @@ pub struct Sessions {
 pub struct Session {
     id: String,
     dir: PathBuf,
+}
+
+/// What `tv ls` shows about a session.
+pub struct Summary {
+    pub id: String,
+    pub title: Option<String>,
+    pub rows: usize,
+    pub columns: usize,
+    pub modified_at: SystemTime,
 }
 
 impl Sessions {
@@ -130,6 +145,46 @@ impl Sessions {
         Ok(self.list()?.into_iter().next())
     }
 
+    /// Delete a session: its known files one by one, then the empty
+    /// directory. Never recursive, and it deletes nothing if the directory
+    /// holds anything it doesn't recognize. It lives on `Sessions` because
+    /// that's what knows the root; a `Session` shouldn't be handed its own
+    /// root back.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one place sessions are deleted"
+    )]
+    pub fn remove(&self, session: Session) -> anyhow::Result<()> {
+        let Session { dir, .. } = session;
+        // Redundant with how a `Session` is made, by design: it's cheap, and
+        // being wrong here is expensive.
+        if !self.is_session_dir(&dir) {
+            bail!(
+                "refusing to delete {}: not a session directory",
+                dir.display()
+            );
+        }
+        let table = dir.join(TABLE_FILE);
+        for path in session_files(&dir)? {
+            if path != table {
+                fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+            }
+        }
+        // `table.json` goes last, and only if nothing arrived meanwhile (a
+        // viewer writing `view.json`, say). Refusing here leaves a session
+        // that's still listed, so `tv rm` can simply be run again.
+        if session_files(&dir)? != [table.clone()] {
+            bail!(
+                "refusing to delete {}: it changed while being deleted; try again",
+                dir.display()
+            );
+        }
+        fs::remove_file(&table).with_context(|| format!("removing {}", table.display()))?;
+        // Not recursive: if anything arrived in the last moment, this fails
+        // with "directory not empty" instead of deleting it.
+        fs::remove_dir(&dir).with_context(|| format!("removing {}", dir.display()))
+    }
+
     /// The session at `dir`, if `dir` passes `is_session_dir`.
     fn session_at(&self, dir: PathBuf) -> Option<Session> {
         if !self.is_session_dir(&dir) {
@@ -174,6 +229,54 @@ impl Session {
     pub fn modified_at(&self) -> anyhow::Result<SystemTime> {
         newest_mtime(&self.dir).with_context(|| format!("reading {}", self.dir.display()))
     }
+
+    /// Title, row and column counts, and mtime for listings. Parses the
+    /// table, so it fails if `table.json` doesn't.
+    pub fn summary(&self) -> anyhow::Result<Summary> {
+        let table = self.load_table()?;
+        Ok(Summary {
+            id: self.id.clone(),
+            title: table.title,
+            rows: table.rows.len(),
+            columns: table.columns.len(),
+            modified_at: self.modified_at()?,
+        })
+    }
+}
+
+/// Every entry in session directory `dir`, or an error, before anything is
+/// deleted, if one of them isn't a file `remove` may delete.
+fn session_files(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let reading = || format!("reading {}", dir.display());
+    let mut files = Vec::new();
+    for entry in fs::read_dir(dir).with_context(reading)? {
+        let entry = entry.with_context(reading)?;
+        let name = entry.file_name();
+        // `file_type` doesn't follow symlinks, so a link isn't a file here.
+        let is_file = entry.file_type().is_ok_and(|kind| kind.is_file());
+        if !is_file || !is_session_file(&name) {
+            bail!(
+                "refusing to delete {}: unexpected entry {}",
+                dir.display(),
+                name.to_string_lossy()
+            );
+        }
+        files.push(entry.path());
+    }
+    Ok(files)
+}
+
+/// Whether a session directory may hold a file named `name`: one of
+/// `SESSION_FILES`, or a `.{name}.{pid}.tmp` left by a `write_atomic` that
+/// crashed before its rename. Nothing looser.
+#[expect(
+    clippy::case_sensitive_file_extension_comparisons,
+    reason = "write_atomic only writes `.tmp`; matching more loosely would delete more"
+)]
+fn is_session_file(name: &OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        SESSION_FILES.contains(&name) || (name.starts_with('.') && name.ends_with(".tmp"))
+    })
 }
 
 /// The newest mtime among `dir`'s entries, starting from the epoch so there's
@@ -380,6 +483,80 @@ mod tests {
         let link = sessions.root.join("link11");
         std::os::unix::fs::symlink(&session.dir, &link).unwrap();
         assert!(!sessions.is_session_dir(&link));
+    }
+
+    #[test]
+    fn remove_deletes_the_session_and_nothing_else() {
+        let (_dir, sessions) = sessions();
+        let target = sessions.create(&table()).unwrap();
+        let sibling = sessions.create(&table()).unwrap();
+        let stray = sessions.root.join("notes.txt");
+        fs::write(&stray, "keep me").unwrap();
+        let target_dir = target.dir.clone();
+        sessions.remove(target).unwrap();
+        assert!(!target_dir.exists());
+        assert!(sessions.open(sibling.id()).is_ok());
+        assert!(stray.exists());
+    }
+
+    #[test]
+    fn remove_deletes_a_leftover_temp_file() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        fs::write(session.dir.join(".table.json.123.tmp"), "partial").unwrap();
+        let dir = session.dir.clone();
+        sessions.remove(session).unwrap();
+        assert!(!dir.exists());
+    }
+
+    /// Make an entry called `name` in a new session's directory, then check
+    /// that `remove` refuses and leaves both it and `table.json` in place.
+    fn assert_remove_refuses(name: &str, make: impl Fn(&Path) -> io::Result<()>) {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        let entry = session.dir.join(name);
+        make(&entry).unwrap();
+        let table_path = session.dir.join(TABLE_FILE);
+        let message = format!("{:#}", sessions.remove(session).unwrap_err());
+        assert!(message.contains("refusing to delete"), "{message}");
+        assert!(
+            message.contains(&format!("unexpected entry {name}")),
+            "{message}"
+        );
+        assert!(entry.exists());
+        assert!(table_path.is_file());
+    }
+
+    #[test]
+    fn remove_refuses_an_unknown_file() {
+        assert_remove_refuses("notes.txt", |path| fs::write(path, "mine"));
+    }
+
+    #[test]
+    fn remove_refuses_a_subdirectory() {
+        assert_remove_refuses("subdir", |path| fs::create_dir(path));
+    }
+
+    #[test]
+    fn remove_refuses_a_session_from_another_root() {
+        let (_one, mine) = sessions();
+        let (_two, theirs) = sessions();
+        let session = mine.create(&table()).unwrap();
+        let dir = session.dir.clone();
+        let message = format!("{:#}", theirs.remove(session).unwrap_err());
+        assert!(message.contains("not a session directory"), "{message}");
+        assert!(dir.join(TABLE_FILE).is_file());
+    }
+
+    #[test]
+    fn summary_describes_the_table() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        let summary = session.summary().unwrap();
+        assert_eq!(summary.id, session.id());
+        assert_eq!(summary.title.as_deref(), Some("Things"));
+        assert_eq!((summary.rows, summary.columns), (2, 2));
+        assert_eq!(summary.modified_at, session.modified_at().unwrap());
     }
 
     #[test]
