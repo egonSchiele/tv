@@ -6,6 +6,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use serde_json::Value;
+
 /// Run `tv` with `args` and `TV_HOME` set to `home`, feeding `stdin` to it.
 fn tv(home: &Path, args: &[&str], stdin: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_tv"))
@@ -40,8 +42,9 @@ fn succeeds(output: &Output) -> String {
 }
 
 /// Make session `id` under `home` by writing its `table.json` directly, the
-/// way any other writer would. No command makes one without the viewer until
-/// `tv agent new`, and this also pins down the on-disk layout.
+/// way any other writer would. Unlike `tv agent new`, it picks the ID and can
+/// write a `table.json` no command would, such as a broken one. It also pins
+/// down the on-disk layout.
 fn write_session(home: &Path, id: &str, table: &str) -> PathBuf {
     let dir = home.join("sessions").join(id);
     fs::create_dir_all(&dir).unwrap();
@@ -382,4 +385,256 @@ fn prune_never_removes_an_open_session() {
     assert_eq!(output, "skipped open00  (viewer open)\nnothing to prune\n");
     // `--closed` doesn't match it at all, so there's no skipped line.
     assert_eq!(succeeds(&prune(&["--closed"])), "nothing to prune\n");
+}
+
+// `tv agent`
+
+/// Run `tv agent <args>`; assert it exited 0 and printed exactly one line,
+/// and return that line parsed as JSON. Every successful agent call in these
+/// tests goes through here, so every command's output is checked this way.
+fn agent(home: &Path, args: &[&str], stdin: &str) -> Value {
+    let printed = succeeds(&tv(home, &[&["agent"], args].concat(), stdin));
+    assert_eq!(printed.lines().count(), 1, "{printed}");
+    assert!(printed.ends_with('\n'), "{printed:?}");
+    serde_json::from_str(&printed).unwrap()
+}
+
+/// `tv agent <args>`, for a call that should fail.
+fn agent_output(home: &Path, args: &[&str], stdin: &str) -> Output {
+    tv(home, &[&["agent"], args].concat(), stdin)
+}
+
+/// `examples/prs.json`'s rows as a bare array, the way `gh … --json` prints
+/// them.
+fn example_rows() -> Value {
+    let table: Value = serde_json::from_str(&example()).unwrap();
+    table["rows"].clone()
+}
+
+/// A session made by `tv agent new` from `example_rows()`, keyed on `number`
+/// and titled `PRs`. Returns its ID.
+fn new_session(home: &Path) -> String {
+    let rows = example_rows().to_string();
+    let created = agent(home, &["new", "--key", "number", "--title", "PRs"], &rows);
+    created["session"].as_str().unwrap().to_string()
+}
+
+fn session_dir(home: &Path, id: &str) -> PathBuf {
+    home.join("sessions").join(id)
+}
+
+#[test]
+fn agent_new_reads_stdin_and_prints_how_to_open_it() {
+    let home = tempfile::tempdir().unwrap();
+    let rows = example_rows().to_string();
+    let created = agent(
+        home.path(),
+        &["new", "--key", "number", "--title", "PRs"],
+        &rows,
+    );
+    let id = created["session"].as_str().unwrap();
+    assert_eq!(id.len(), 6, "{created}");
+    assert_eq!(
+        (created["rows"].as_u64(), created["columns"].as_u64()),
+        (Some(40), Some(9))
+    );
+    // The tests set `TV_HOME`, so the command sets it too.
+    let expected = format!("TV_HOME='{}' tv open {id}", home.path().display());
+    assert_eq!(created["open_command"], expected.as_str());
+    let table = agent(home.path(), &["get", id], "");
+    assert_eq!(
+        (table["key"].as_str(), table["title"].as_str()),
+        (Some("number"), Some("PRs"))
+    );
+    assert!(succeeds(&tv(home.path(), &["ls"], "")).contains(id));
+}
+
+#[test]
+fn agent_new_reads_a_file_or_dash() {
+    let home = tempfile::tempdir().unwrap();
+    let file = home.path().join("rows.json");
+    fs::write(&file, example_rows().to_string()).unwrap();
+    let from_file = agent(home.path(), &["new", file.to_str().unwrap()], "");
+    assert_eq!(from_file["rows"], 40);
+    let from_dash = agent(home.path(), &["new", "-"], &example_rows().to_string());
+    assert_eq!(from_dash["rows"], 40);
+    assert_ne!(from_file["session"], from_dash["session"]);
+}
+
+#[test]
+fn agent_new_without_a_table_makes_no_session() {
+    let home = tempfile::tempdir().unwrap();
+    assert_fails_with(&agent_output(home.path(), &["new"], ""), "parsing stdin");
+    let missing = agent_output(home.path(), &["new", "no/such.json"], "");
+    assert_fails_with(&missing, "reading no/such.json");
+    assert!(!home.path().join("sessions").exists());
+}
+
+#[test]
+fn agent_new_imports_a_saved_files_comments() {
+    let home = tempfile::tempdir().unwrap();
+    let mut table: Value = serde_json::from_str(&example()).unwrap();
+    table["comments"] = serde_json::json!([{
+        "id": "c1", "row_id": "404", "column": "title", "messages": [
+            {"id": "c1", "author": "user", "text": "why?", "ts": "2026-10-28T19:03:00Z"}
+        ]
+    }]);
+    let created = agent(home.path(), &["new"], &table.to_string());
+    let listed = agent(home.path(), &["sessions"], "");
+    assert_eq!(listed[0]["session"], created["session"]);
+    assert_eq!(listed[0]["awaiting_reply"], 1);
+}
+
+#[test]
+fn agent_push_keeps_the_key_and_title() {
+    let home = tempfile::tempdir().unwrap();
+    let id = new_session(home.path());
+    let mut rows = example_rows();
+    rows[1]["title"] = "Bump serde".into();
+    let pushed = agent(home.path(), &["push", &id], &rows.to_string());
+    assert_eq!(pushed["session"], id.as_str());
+    let table = agent(home.path(), &["get", &id], "");
+    assert_eq!(
+        (table["key"].as_str(), table["title"].as_str()),
+        (Some("number"), Some("PRs"))
+    );
+    assert_eq!(table["rows"][1]["title"], "Bump serde");
+
+    // So a repeated key is still caught, and the error says how to drop it.
+    rows[2]["number"] = rows[1]["number"].clone();
+    let output = agent_output(home.path(), &["push", &id], &rows.to_string());
+    assert_fails_with(&output, "duplicate key value \"404\"");
+    assert!(
+        stderr(&output).contains("\"key\": null"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(agent(home.path(), &["get", &id], ""), table);
+}
+
+#[test]
+fn agent_push_with_key_null_drops_the_key() {
+    let home = tempfile::tempdir().unwrap();
+    let id = new_session(home.path());
+    let table = serde_json::json!({"key": null, "rows": [{"n": 1}, {"n": 1}]});
+    agent(home.path(), &["push", &id], &table.to_string());
+    let table = agent(home.path(), &["get", &id], "");
+    assert_eq!(table.get("key"), None, "{table}");
+    assert_eq!(table["title"], "PRs");
+}
+
+#[test]
+fn agent_push_rejects_and_keeps_the_table() {
+    let home = tempfile::tempdir().unwrap();
+    let id = new_session(home.path());
+    let before = agent(home.path(), &["get", &id], "");
+    let rows = example_rows().to_string();
+
+    let output = agent_output(home.path(), &["push", &id, "--key", "nope"], &rows);
+    assert_fails_with(&output, "key column \"nope\" is not one of the columns");
+
+    let mut with_comments: Value = serde_json::from_str(&example()).unwrap();
+    with_comments["comments"] = serde_json::json!([{
+        "id": "c1", "row_id": "404", "column": "title", "messages": []
+    }]);
+    let output = agent_output(home.path(), &["push", &id], &with_comments.to_string());
+    assert_fails_with(&output, "push doesn't change comments");
+    assert!(
+        !session_dir(home.path(), &id)
+            .join("comments.jsonl")
+            .exists()
+    );
+
+    assert_fails_with(
+        &agent_output(home.path(), &["push", &id], "not json"),
+        "parsing stdin",
+    );
+    assert_fails_with(
+        &agent_output(home.path(), &["push", "nope00"], &rows),
+        "no session",
+    );
+    assert_eq!(agent(home.path(), &["get", &id], ""), before);
+}
+
+#[test]
+fn agent_push_replaces_a_broken_table() {
+    let home = tempfile::tempdir().unwrap();
+    write_session(home.path(), "abc123", "not json");
+    let rows = r#"[{"id": 1}]"#;
+    agent(home.path(), &["push", "abc123", "--key", "id"], rows);
+    let table = agent(home.path(), &["get", "abc123"], "");
+    assert_eq!(table["rows"], serde_json::json!([{"id": 1}]));
+}
+
+#[test]
+fn agent_get_prints_input_for_push() {
+    let home = tempfile::tempdir().unwrap();
+    let first = new_session(home.path());
+    let table = agent(home.path(), &["get", &first], "");
+    assert_eq!(table.get("comments"), None, "{table}");
+    let second = agent(home.path(), &["new"], r#"[{"x": 1}]"#);
+    let second = second["session"].as_str().unwrap();
+    agent(home.path(), &["push", second], &table.to_string());
+    assert_eq!(agent(home.path(), &["get", second], ""), table);
+}
+
+#[test]
+fn agent_sessions_lists_every_session() {
+    let home = tempfile::tempdir().unwrap();
+    assert_eq!(agent(home.path(), &["sessions"], ""), serde_json::json!([]));
+
+    write_comments(
+        &write_session(home.path(), "user00", &example()),
+        &[USER_COMMENT],
+    );
+    open_viewer(&write_session(home.path(), "open00", &example()));
+    write_session(home.path(), "broken", "not json");
+    let listed = agent(home.path(), &["sessions"], "");
+    let listed = listed.as_array().unwrap();
+    assert_eq!(listed.len(), 3);
+    let entry = |id: &str| {
+        listed
+            .iter()
+            .find(|entry| entry["session"] == id)
+            .unwrap()
+            .clone()
+    };
+    let user = entry("user00");
+    assert_eq!(user["title"], "Open pull requests");
+    assert_eq!(
+        (user["rows"].as_u64(), user["columns"].as_u64()),
+        (Some(40), Some(9))
+    );
+    assert_eq!(user["awaiting_reply"], 1);
+    assert_eq!(user["viewer_open"], false);
+    assert!(
+        user["modified_at"].as_str().unwrap().ends_with('Z'),
+        "{user}"
+    );
+    // The spec's field order.
+    let keys: Vec<&str> = user
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "session",
+            "title",
+            "rows",
+            "columns",
+            "viewer_open",
+            "awaiting_reply",
+            "modified_at"
+        ]
+    );
+    assert_eq!(entry("open00")["viewer_open"], true);
+    let broken = entry("broken");
+    assert_eq!(
+        (broken["rows"].clone(), broken["title"].clone()),
+        (Value::Null, Value::Null)
+    );
+    assert_eq!(broken["awaiting_reply"], Value::Null);
 }

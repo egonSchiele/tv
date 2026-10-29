@@ -207,7 +207,7 @@ An argument to `tv open` is treated as a file if it contains `.` or `/`, and as 
 
 ## Agent CLI
 
-All commands print JSON unless noted. `<id>` is required; agents find IDs from `new` output, from the user, or from `tv agent sessions`.
+All commands print JSON unless noted: one line of compact JSON, which costs an agent fewer tokens to read than pretty-printed JSON. `<id>` is required; agents find IDs from `new` output, from the user, or from `tv agent sessions`.
 
 ### `tv agent help`
 
@@ -215,15 +215,21 @@ Prints the agent guide as plain text (see below). The guide is embedded in the b
 
 ### `tv agent new [FILE] [--title T] [--key K]`
 
-Create a session from FILE or stdin. `--title` and `--key` override or fill in the file's values.
+Create a session from FILE or stdin (`-`, or no FILE). `--title` and `--key` override or fill in the file's values, before the key is validated. Comments in the file are imported, as with `tv open <file.json>`.
 
 ```json
 { "session": "k3f9x2", "open_command": "tv open k3f9x2", "rows": 38, "columns": 9 }
 ```
 
+With `TV_HOME` set, `open_command` sets it too, as an absolute path in single quotes (`TV_HOME='/tmp/tv' tv open k3f9x2`): the user runs the command in their own shell, which may not have it.
+
 ### `tv agent push <id> [FILE] [--title T] [--key K]`
 
-Replace the session's table. Same input and output as `new`. Rejected if key values are missing or duplicated.
+Replace the session's table. Same input and output as `new`. Rejected if key values are missing or duplicated, and the table is left as it was.
+
+Input that names no `title` or `key` keeps the session's, so piping a bare array of rows keeps the key that comments and the cursor follow. If the kept key then fails validation, the error says it was kept. `--title` and `--key` still override, and the full format with `"key": null` drops the key.
+
+A table with `comments` is rejected: push doesn't change comments. To start a session from a saved file, use `new`.
 
 ### `tv agent get <id>`
 
@@ -280,6 +286,8 @@ Start a thread on a cell, for when the agent wants to point the human at somethi
 ]
 ```
 
+Most recently modified first. A session whose `table.json` can't be read is listed with `null` for `title`, `rows`, `columns` and `awaiting_reply`.
+
 ### Agent guide (content of `tv agent help`)
 
 Short and example-driven. It should cover:
@@ -325,7 +333,7 @@ src/
   session.rs       # paths, ID generation, listing, most-recent lookup, safe removal, view.json and viewer-open check, reading and appending comments.jsonl
   time.rs          # RFC 3339 timestamps (ls, view.json, comments)
   comments.rs      # comment events and threads, the log's line format, folding events into threads
-  agent.rs         # tv agent subcommands
+  agent.rs         # tv agent subcommands: their clap definitions and JSON output
   agent_help.txt   # guide text, include_str!'d
   viewer/
     mod.rs         # terminal setup/teardown, event loop (key events + 250ms tick)

@@ -79,24 +79,71 @@ impl Column {
     }
 }
 
+/// A table's `title` and `key`, as `tv agent new` and `push` set them.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Meta<'a> {
+    pub title: Option<&'a str>,
+    pub key: Option<&'a str>,
+}
+
 impl Table {
     /// Parse a table from JSON text, accepting either the full format or a bare
     /// array of row objects.
     pub fn parse(text: &str) -> anyhow::Result<Table> {
+        Table::parse_with(text, Meta::default(), Meta::default())
+    }
+
+    /// `parse`, with `set` replacing the text's `title` and `key`, and `fill`
+    /// supplying them where the text has neither a value nor `null`. Both
+    /// apply before validation, so a key from either is checked like one in
+    /// the file.
+    pub fn parse_with(text: &str, set: Meta, fill: Meta) -> anyhow::Result<Table> {
         let mut value: Value = serde_json::from_str(text)?;
         if value.is_array() {
             let mut wrapper = Map::new();
             wrapper.insert("rows".to_string(), value);
             value = Value::Object(wrapper);
         }
-        Ok(serde_json::from_value(value)?)
+        // `get` is `None` for a field the text doesn't have, and for a
+        // scalar, which serde then rejects below.
+        let title = set
+            .title
+            .or(fill.title.filter(|_| value.get("title").is_none()));
+        let kept_key = fill
+            .key
+            .filter(|_| set.key.is_none() && value.get("key").is_none());
+        let key = set.key.or(kept_key);
+        if let Value::Object(fields) = &mut value {
+            for (name, chosen) in [("title", title), ("key", key)] {
+                if let Some(chosen) = chosen {
+                    fields.insert(name.to_string(), chosen.into());
+                }
+            }
+        }
+        let table = serde_json::from_value(value);
+        // A key the caller didn't ask for is puzzling in an error, so say
+        // where it came from and how to drop it.
+        match kept_key {
+            Some(key) => table.with_context(|| {
+                format!(
+                    "kept the session's key \"{key}\", since the table names none; \
+                     pass --key, or push the full format with \"key\": null to drop it"
+                )
+            }),
+            None => Ok(table?),
+        }
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> anyhow::Result<Table> {
+        Table::from_path_with(path, Meta::default(), Meta::default())
+    }
+
+    /// `from_path`, with `set` and `fill` applied as in `parse_with`.
+    pub fn from_path_with(path: impl AsRef<Path>, set: Meta, fill: Meta) -> anyhow::Result<Table> {
         let path = path.as_ref();
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Table::parse(&text).with_context(|| format!("parsing {}", path.display()))
+        Table::parse_with(&text, set, fill).with_context(|| format!("parsing {}", path.display()))
     }
 
     /// Write the table, comments included, in the full format. Inferred
@@ -392,6 +439,90 @@ mod tests {
     fn missing_key_value_errors() {
         let message = error_message(r#"{"key": "id", "rows": [{"id": 1}, {"id": null}, {}]}"#);
         assert!(message.contains("row 1 has no value"), "{message}");
+    }
+
+    fn meta<'a>(title: Option<&'a str>, key: Option<&'a str>) -> Meta<'a> {
+        Meta { title, key }
+    }
+
+    #[test]
+    fn parse_with_sets_a_title_and_key() {
+        let rows = r#"[{"id": 1}, {"id": 2}]"#;
+        let table = Table::parse_with(rows, meta(Some("T"), Some("id")), Meta::default()).unwrap();
+        assert_eq!(
+            (table.title.as_deref(), table.key.as_deref()),
+            (Some("T"), Some("id"))
+        );
+        let file = r#"{"title": "old", "key": "x", "rows": [{"id": 1, "x": 1}]}"#;
+        let table = Table::parse_with(file, meta(Some("T"), Some("id")), Meta::default()).unwrap();
+        assert_eq!(
+            (table.title.as_deref(), table.key.as_deref()),
+            (Some("T"), Some("id"))
+        );
+    }
+
+    #[test]
+    fn a_set_key_is_validated_like_one_in_the_file() {
+        let rows = r#"[{"id": 1}, {"id": 1}]"#;
+        let error = Table::parse_with(rows, meta(None, Some("id")), Meta::default()).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("duplicate key value \"1\" at rows 0 and 1"),
+            "{message}"
+        );
+        assert!(!message.contains("kept"), "{message}");
+    }
+
+    #[test]
+    fn fill_supplies_only_what_the_text_doesnt_have() {
+        let fill = meta(Some("kept"), Some("id"));
+        let table = Table::parse_with(r#"[{"id": 1}]"#, Meta::default(), fill).unwrap();
+        assert_eq!(
+            (table.title.as_deref(), table.key.as_deref()),
+            (Some("kept"), Some("id"))
+        );
+        let own = r#"{"title": "own", "key": "n", "rows": [{"id": 1, "n": 1}]}"#;
+        let table = Table::parse_with(own, Meta::default(), fill).unwrap();
+        assert_eq!(
+            (table.title.as_deref(), table.key.as_deref()),
+            (Some("own"), Some("n"))
+        );
+        // `null` counts as naming the field: it's how a push drops a key.
+        let nulls = r#"{"title": null, "key": null, "rows": [{"id": 1}]}"#;
+        let table = Table::parse_with(nulls, Meta::default(), fill).unwrap();
+        assert_eq!((table.title, table.key), (None, None));
+        // What's set wins over `fill`.
+        let table = Table::parse_with(r#"[{"id": 1}]"#, meta(Some("set"), None), fill).unwrap();
+        assert_eq!(table.title.as_deref(), Some("set"));
+    }
+
+    #[test]
+    fn a_kept_key_that_fails_says_where_it_came_from() {
+        let fill = meta(None, Some("number"));
+        for rows in [r#"[{"title": "a"}]"#, r#"[{"number": 1}, {"number": 1}]"#] {
+            let error = Table::parse_with(rows, Meta::default(), fill).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(
+                message.starts_with("kept the session's key \"number\""),
+                "{message}"
+            );
+            assert!(message.contains("\"key\": null"), "{message}");
+        }
+    }
+
+    #[test]
+    fn from_path_with_applies_meta() {
+        let table = Table::from_path_with(
+            "examples/prs.json",
+            meta(Some("PRs"), None),
+            Meta::default(),
+        )
+        .unwrap();
+        assert_eq!(table.title.as_deref(), Some("PRs"));
+        assert_eq!(table.key.as_deref(), Some("number"));
+        let error =
+            Table::from_path_with("no/such.json", Meta::default(), Meta::default()).unwrap_err();
+        assert!(format!("{error:#}").starts_with("reading no/such.json"));
     }
 
     #[test]

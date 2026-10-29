@@ -4,8 +4,7 @@
 //! what makes `create` atomic to readers: `table.json` is written atomically
 //! as the last step, so a concurrent `tv ls` sees either no session or a
 //! complete one, never a half-made one. The comment log, if the table came
-//! with comments, is written before it. Keep that rule when adding other
-//! ways to create sessions (`tv agent new`, ADI-225).
+//! with comments, is written before it.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirBuilder, OpenOptions};
@@ -41,6 +40,9 @@ const SESSION_FILES: &[&str] = &[TABLE_FILE, VIEW_FILE, COMMENTS_FILE, "goto.jso
 /// The sessions root. Holds the path only; every method does its IO on call.
 pub struct Sessions {
     root: PathBuf, // …/sessions
+    /// `TV_HOME`, made absolute, if it was set. `tv agent`'s `open_command`
+    /// repeats it, since the user's shell may not have it.
+    tv_home: Option<PathBuf>,
 }
 
 /// One session directory. Only `Sessions` makes these, so the ID is always
@@ -97,17 +99,33 @@ impl Sessions {
         // An empty `TV_HOME=` counts as unset, as with XDG variables. Otherwise
         // the root would be the relative path `sessions`, in whatever
         // directory `tv` runs from.
-        let home = match tv_home.filter(|home| !home.is_empty()) {
-            Some(home) => PathBuf::from(home),
+        let tv_home = tv_home
+            .filter(|home| !home.is_empty())
+            .map(std::path::absolute)
+            .transpose()
+            .context("resolving TV_HOME")?;
+        let home = match &tv_home {
+            Some(home) => home.clone(),
             None => std::env::home_dir()
                 .context("can't find your home directory; set TV_HOME")?
                 .join(".tv"),
         };
-        Ok(Sessions::new(home.join("sessions")))
+        Ok(Sessions {
+            tv_home,
+            ..Sessions::new(home.join("sessions"))
+        })
     }
 
     pub fn new(root: PathBuf) -> Sessions {
-        Sessions { root }
+        Sessions {
+            root,
+            tv_home: None,
+        }
+    }
+
+    /// `TV_HOME`, absolute, or `None` for the default `~/.tv`.
+    pub fn tv_home(&self) -> Option<&Path> {
+        self.tv_home.as_deref()
     }
 
     /// A new session holding `table`. Creates the root if needed.
@@ -1019,6 +1037,7 @@ mod tests {
     fn from_home_appends_sessions() {
         let sessions = Sessions::from_home(Some("/x".into())).unwrap();
         assert_eq!(sessions.root, PathBuf::from("/x/sessions"));
+        assert_eq!(sessions.tv_home(), Some(Path::new("/x")));
         for unset in [None, Some(OsString::new())] {
             let sessions = Sessions::from_home(unset).unwrap();
             assert!(
@@ -1026,7 +1045,16 @@ mod tests {
                 "{:?}",
                 sessions.root
             );
+            assert_eq!(sessions.tv_home(), None);
         }
+    }
+
+    #[test]
+    fn a_relative_tv_home_is_made_absolute() {
+        let sessions = Sessions::from_home(Some("rel".into())).unwrap();
+        let home = std::env::current_dir().unwrap().join("rel");
+        assert_eq!(sessions.tv_home(), Some(home.as_path()));
+        assert_eq!(sessions.root, home.join("sessions"));
     }
 
     #[test]

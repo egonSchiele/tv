@@ -3,6 +3,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 
+mod agent;
 mod comments;
 mod files;
 mod session;
@@ -50,6 +51,11 @@ enum Command {
     },
     /// Write a session's table, comments included, to a JSON file.
     Save { id: String, path: String },
+    /// Commands for agents. Each prints one line of JSON.
+    Agent {
+        #[command(subcommand)]
+        command: agent::AgentCommand,
+    },
     /// Session maintenance.
     Session {
         #[command(subcommand)]
@@ -376,6 +382,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Ls) => ls(&sessions),
         Some(Command::Rm { ids, force }) => rm(&sessions, ids, *force),
         Some(Command::Save { id, path }) => save(&sessions, id, path),
+        Some(Command::Agent { command }) => agent::run(&sessions, command),
         Some(Command::Session {
             command:
                 SessionCommand::Prune {
