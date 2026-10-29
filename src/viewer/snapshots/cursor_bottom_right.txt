@@ -8,7 +8,7 @@
 "│    278 │ https://github.com/example/shop/pull/278 │                │"
 "│    275 │ https://github.com/example/shop/pull/275 │                │"
 "├────────────────────────────────────────────────────────────────────┤"
-"│ rows 40  cols 9  ·  q to quit                                      │"
+"│ row 40/40  col 9/9  ·  ? help  q quit                              │"
 "└────────────────────────────────────────────────────────────────────┘"
 --- styles
 row 1: 1..9 BOLD, 10..52 BOLD

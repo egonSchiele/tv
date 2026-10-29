@@ -8,7 +8,7 @@
 "│    393 │ Remove dead feature flag              │"
 "│    392 │ Speed up CSV export for large tables… │"
 "├────────────────────────────────────────────────┤"
-"│ rows 40  cols 9  ·  q to quit                  │"
+"│ row 1/40  col 1/9  ·  ? help  q quit           │"
 "└────────────────────────────────────────────────┘"
 --- styles
 row 1: 1..9 BOLD, 10..49 BOLD

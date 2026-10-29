@@ -16,7 +16,7 @@
 "│    374 │ Rate limit password reset endpoint to prevent abu… │ jordan     │ open  │      1206 │   │"
 "│    372 │ Add pagination to /v2/orders                       │ fatima     │ draft │        16 │   │"
 "├──────────────────────────────────────────────────────────────────────────────────────────────────┤"
-"│ rows 40  cols 9  ·  q to quit                                                                    │"
+"│ row 1/40  col 1/9  ·  ? help  q quit                                                             │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────┘"
 --- styles
 row 1: 1..9 BOLD, 10..62 BOLD, 63..75 BOLD, 76..83 BOLD, 84..95 BOLD

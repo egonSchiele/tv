@@ -49,10 +49,31 @@ impl Key {
     }
 }
 
-/// One row of a bindings table: these keys do this action.
+/// One row of a bindings table: these keys do this action. The help overlay
+/// lists `help` next to the keys, so the overlay can't drift from the keys.
 pub struct Binding<A> {
     pub keys: &'static [Key],
     pub action: A,
+    pub help: &'static str,
+}
+
+/// How a key is written in the help overlay: `j`, `↓`, `PgDn`, `Ctrl-f`.
+pub fn key_label(key: Key) -> String {
+    let name = match key.code {
+        KeyCode::Char(character) => character.to_string(),
+        KeyCode::Up => "↑".to_string(),
+        KeyCode::Down => "↓".to_string(),
+        KeyCode::Left => "←".to_string(),
+        KeyCode::Right => "→".to_string(),
+        KeyCode::PageUp => "PgUp".to_string(),
+        KeyCode::PageDown => "PgDn".to_string(),
+        other => format!("{other:?}"),
+    };
+    if key.ctrl {
+        format!("Ctrl-{name}")
+    } else {
+        name
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,7 +88,15 @@ pub enum Action {
     LastRow,
     FirstCol,
     LastCol,
+    Help,
     Quit,
+}
+
+/// What the keyboard is driving right now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Grid,
+    Help,
 }
 
 /// Every key the grid responds to. `handle_key` looks keys up here; to add a
@@ -76,46 +105,62 @@ pub const GRID_BINDINGS: &[Binding<Action>] = &[
     Binding {
         keys: &[Key::plain(KeyCode::Down), Key::char('j')],
         action: Action::Down,
+        help: "move down",
     },
     Binding {
         keys: &[Key::plain(KeyCode::Up), Key::char('k')],
         action: Action::Up,
+        help: "move up",
     },
     Binding {
         keys: &[Key::plain(KeyCode::Right), Key::char('l')],
         action: Action::Right,
+        help: "move right",
     },
     Binding {
         keys: &[Key::plain(KeyCode::Left), Key::char('h')],
         action: Action::Left,
+        help: "move left",
     },
     Binding {
         keys: &[Key::plain(KeyCode::PageDown), Key::ctrl('f')],
         action: Action::PageDown,
+        help: "page down",
     },
     Binding {
         keys: &[Key::plain(KeyCode::PageUp), Key::ctrl('b')],
         action: Action::PageUp,
+        help: "page up",
     },
     Binding {
         keys: &[Key::char('g')],
         action: Action::FirstRow,
+        help: "first row",
     },
     Binding {
         keys: &[Key::char('G')],
         action: Action::LastRow,
+        help: "last row",
     },
     Binding {
         keys: &[Key::char('0')],
         action: Action::FirstCol,
+        help: "first column",
     },
     Binding {
         keys: &[Key::char('$')],
         action: Action::LastCol,
+        help: "last column",
+    },
+    Binding {
+        keys: &[Key::char('?')],
+        action: Action::Help,
+        help: "show this help",
     },
     Binding {
         keys: &[Key::char('q'), Key::ctrl('c')],
         action: Action::Quit,
+        help: "quit",
     },
 ];
 
@@ -138,6 +183,7 @@ pub struct App {
     pub first_col: usize, // index of the first non-pinned column shown
     viewport: Viewport,   // set only through set_viewport
     pub theme: Theme,
+    pub mode: Mode,
     pub should_quit: bool,
 }
 
@@ -153,6 +199,7 @@ impl App {
             first_col: 0,
             viewport: Viewport::default(),
             theme: Theme::color(),
+            mode: Mode::Grid,
             should_quit: false,
         }
     }
@@ -184,8 +231,18 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return;
         }
-        if let Some(action) = lookup(GRID_BINDINGS, &key) {
-            self.perform(action);
+        // Ctrl-c quits from every mode; raw mode turned off the terminal's own.
+        if Key::ctrl('c').matches(&key) {
+            self.should_quit = true;
+            return;
+        }
+        match self.mode {
+            Mode::Grid => {
+                if let Some(action) = lookup(GRID_BINDINGS, &key) {
+                    self.perform(action);
+                }
+            }
+            Mode::Help => self.mode = Mode::Grid, // any key closes it
         }
     }
 
@@ -210,6 +267,7 @@ impl App {
             Action::LastRow => self.move_to(usize::MAX, col),
             Action::FirstCol => self.move_to(row, 0),
             Action::LastCol => self.move_to(row, usize::MAX),
+            Action::Help => self.mode = Mode::Help,
             Action::Quit => self.should_quit = true,
         }
     }
@@ -417,6 +475,41 @@ mod tests {
         app.set_viewport(20, 3);
         assert_eq!(app.first_row, 47);
         assert!(on_screen(&app, 9));
+    }
+
+    #[test]
+    fn question_mark_opens_help_and_any_key_closes_it() {
+        let mut app = grid_app(None);
+        press_char(&mut app, '?');
+        assert_eq!(app.mode, Mode::Help);
+        // The key that closes help does nothing else.
+        press_char(&mut app, 'j');
+        assert_eq!(app.mode, Mode::Grid);
+        assert_eq!(app.cursor, Cursor::default());
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_help() {
+        let mut app = grid_app(None);
+        press_char(&mut app, '?');
+        press(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn key_labels() {
+        assert_eq!(key_label(Key::char('j')), "j");
+        assert_eq!(key_label(Key::plain(KeyCode::Down)), "↓");
+        assert_eq!(key_label(Key::plain(KeyCode::PageDown)), "PgDn");
+        assert_eq!(key_label(Key::ctrl('f')), "Ctrl-f");
+    }
+
+    #[test]
+    fn every_grid_binding_has_help_text() {
+        for binding in GRID_BINDINGS {
+            assert_ne!(binding.help, "");
+            assert_ne!(binding.keys.len(), 0);
+        }
     }
 
     #[test]

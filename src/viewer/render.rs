@@ -2,12 +2,12 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use serde_json::Value;
 
-use super::app::App;
+use super::app::{App, GRID_BINDINGS, Mode, key_label};
 use super::layout::{self, Align, VisibleColumn};
 use crate::table::{ColumnType, cell_text, single_line};
 
@@ -67,6 +67,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
     );
     frame.render_widget(Line::from(divider(screen.width)), areas.divider);
     frame.render_widget(status_line(app), areas.status);
+
+    if app.mode == Mode::Help {
+        draw_help(frame, screen);
+    }
 }
 
 fn header_line(app: &App, visible: &[VisibleColumn]) -> Line<'static> {
@@ -163,13 +167,71 @@ fn divider(width: u16) -> String {
     format!("├{middle}┤")
 }
 
+/// Key hints after the position. The full list is in the help overlay.
+const STATUS_HINTS: &str = "? help  q quit";
+
 fn status_line(app: &App) -> Line<'static> {
     let table = app.table();
-    Line::from(format!(
-        " rows {}  cols {}  ·  q to quit",
-        table.rows.len(),
-        table.columns.len()
-    ))
+    let position = if table.rows.is_empty() {
+        "no rows".to_string()
+    } else {
+        format!(
+            "row {}/{}  col {}/{}",
+            app.cursor.row + 1,
+            table.rows.len(),
+            app.cursor.col + 1,
+            table.columns.len()
+        )
+    };
+    Line::from(format!(" {position}  ·  {STATUS_HINTS}"))
+}
+
+/// A centered box listing every grid key, built from `GRID_BINDINGS` so it
+/// always matches what the keys do.
+fn draw_help(frame: &mut Frame, screen: Rect) {
+    let rows: Vec<(String, &str)> = GRID_BINDINGS
+        .iter()
+        .map(|binding| {
+            let keys: Vec<String> = binding.keys.iter().copied().map(key_label).collect();
+            (keys.join(" "), binding.help)
+        })
+        .collect();
+    let keys_width = rows
+        .iter()
+        .map(|(keys, _)| layout::display_width(keys))
+        .max()
+        .unwrap_or(0);
+    let mut lines: Vec<Line> = rows
+        .iter()
+        .map(|(keys, help)| {
+            Line::from(vec![
+                Span::styled(
+                    format!(" {} ", layout::fit(keys, keys_width, Align::Right)),
+                    Style::new().add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!(" {help} ")),
+            ])
+        })
+        .collect();
+    lines.push(Line::from(""));
+    lines.push(Line::from(" Press any key to close").dim());
+
+    let width = lines.iter().map(Line::width).max().unwrap_or(0);
+    let popup = popup_area(screen, width, lines.len());
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(Block::bordered().title(" Keys ")),
+        popup,
+    );
+}
+
+/// A centered box big enough for `width` × `height` of content plus its
+/// border, shrunk to fit the screen.
+fn popup_area(screen: Rect, width: usize, height: usize) -> Rect {
+    let border = 2;
+    let width = u16::try_from(width + border).unwrap_or(u16::MAX);
+    let height = u16::try_from(height + border).unwrap_or(u16::MAX);
+    screen.centered(Constraint::Length(width), Constraint::Length(height))
 }
 
 #[cfg(test)]
@@ -288,9 +350,26 @@ mod tests {
     }
 
     #[test]
+    fn empty_table_status() {
+        let mut app = app(r#"{"columns": [{"name": "a"}], "rows": []}"#);
+        let text = render_text(&mut app, 40, 6);
+        assert!(text.contains(" no rows  ·  ? help"), "{text}");
+    }
+
+    #[test]
+    fn help_overlay() {
+        let mut app = prs();
+        app.mode = Mode::Help;
+        assert_snapshot("help", &render_text(&mut app, 60, 20));
+    }
+
+    #[test]
     fn tiny_terminal_does_not_panic() {
         for (width, height) in [(0, 0), (1, 1), (3, 2), (10, 3)] {
             render(&mut prs(), width, height);
+            let mut help = prs();
+            help.mode = Mode::Help;
+            render(&mut help, width, height);
         }
     }
 }
