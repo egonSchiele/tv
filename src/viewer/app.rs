@@ -368,7 +368,7 @@ pub struct App {
     // nothing can update one without the other.
     table: Table,
     widths: Vec<u16>,
-    pub session_id: Option<String>, // None until sessions exist
+    pub session_id: Option<String>, // shown in the title bar; tests may leave it None
     pub cursor: Cursor,
     pub first_row: usize, // vertical scroll offset
     pub first_col: usize, // index of the first non-pinned column shown

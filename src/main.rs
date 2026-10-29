@@ -2,11 +2,13 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 mod files;
+mod session;
 #[cfg(test)]
 mod snapshot;
 mod table;
 mod viewer;
 
+use session::Sessions;
 use table::Table;
 
 /// A terminal table viewer you share with an agent.
@@ -15,35 +17,53 @@ use table::Table;
 #[derive(Parser)]
 // The optional positional and the optional subcommand let `tv x.json` and
 // `tv open x.json` both work: a subcommand name wins, and anything else is the
-// path. `args_conflicts_with_subcommands` makes `tv x.json open y.json` an
+// target. `args_conflicts_with_subcommands` makes `tv x.json open y.json` an
 // error instead of silently accepting both.
-#[command(
-    name = "tv",
-    version,
-    args_conflicts_with_subcommands = true,
-    arg_required_else_help = true
-)]
+#[command(name = "tv", version, args_conflicts_with_subcommands = true)]
 struct Cli {
-    /// A JSON file to open, or `-` to read stdin. Same as `tv open <path>`.
-    path: Option<String>,
+    /// A JSON file to open (`.` or `/` in the name), `-` to read stdin, or a
+    /// session ID. With none, the most recent session. Same as `tv open`.
+    target: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open a table from a JSON file, or `-` for stdin (sessions come later).
-    Open { path: String },
+    /// Open a file (`.` or `/` in the name), `-` for stdin, or a session ID.
+    /// With no argument, the most recent session.
+    Open { target: Option<String> },
 }
 
 impl Cli {
-    /// The path to open, whichever form was used.
-    fn path(self) -> String {
-        match self.command {
-            Some(Command::Open { path }) => path,
-            // `arg_required_else_help` means clap prints help and exits
-            // before we get here with neither.
-            None => self.path.expect("clap requires a path or a subcommand"),
+    /// What to open, from `tv <target>` or `tv open <target>`. This is the
+    /// only place that knows there are two spellings.
+    fn argument(&self) -> Option<&str> {
+        match &self.command {
+            Some(Command::Open { target }) => target.as_deref(),
+            None => self.target.as_deref(),
+        }
+    }
+}
+
+/// What the positional argument means. The SPEC's rule: a file if it contains
+/// `.` or `/`, `-` for stdin, otherwise a session ID. No argument opens the
+/// most recent session.
+#[derive(Debug, PartialEq, Eq)]
+enum Target {
+    MostRecent,
+    Stdin,
+    File(String),
+    Session(String),
+}
+
+impl Target {
+    fn parse(argument: Option<&str>) -> Target {
+        match argument {
+            None => Target::MostRecent,
+            Some("-") => Target::Stdin,
+            Some(text) if text.contains(['.', '/']) => Target::File(text.to_string()),
+            Some(id) => Target::Session(id.to_string()),
         }
     }
 }
@@ -65,24 +85,48 @@ fn load(source: &str) -> anyhow::Result<Table> {
     Table::from_path(source)
 }
 
+/// Open the viewer on `target`. A file or stdin becomes a new session first.
+fn open(sessions: &Sessions, target: Target) -> anyhow::Result<()> {
+    // Load before creating, so a bad file errors out before the screen
+    // changes and leaves no session behind.
+    let session = match target {
+        Target::Stdin => sessions.create(&load("-")?)?,
+        Target::File(path) => sessions.create(&load(&path)?)?,
+        Target::Session(id) => sessions.open(&id)?,
+        Target::MostRecent => sessions
+            .most_recent()?
+            .context("no sessions yet; open a file with `tv <file.json>`")?,
+    };
+    // For a new session this parses the same bytes again. It's cheap, and
+    // it means every case ends the same way.
+    let table = session.load_table()?;
+    viewer::run(table, session.id().to_string())
+}
+
 // `anyhow::Result` lets any error type bubble up with `?`. Returning `Err` from
 // `main` prints `Error: …` to stderr and exits with status 1.
 fn main() -> anyhow::Result<()> {
-    let path = Cli::parse().path();
-    // Load first, so a bad file errors out before the screen changes.
-    let table = load(&path)?;
-    viewer::run(table)
+    let cli = Cli::parse();
+    let sessions = Sessions::from_home(std::env::var_os("TV_HOME"))?;
+    open(&sessions, Target::parse(cli.argument()))
 }
 
 // `#[cfg(test)]` compiles this module only for `cargo test`.
 #[cfg(test)]
 mod tests {
-    use super::Cli;
-    use clap::error::ErrorKind;
+    use super::{Cli, Target};
     use clap::{CommandFactory, Parser};
 
-    fn parsed_path(args: &[&str]) -> String {
-        Cli::try_parse_from(args).unwrap().path()
+    fn parsed_target(args: &[&str]) -> Target {
+        Target::parse(Cli::try_parse_from(args).unwrap().argument())
+    }
+
+    fn file(path: &str) -> Target {
+        Target::File(path.to_string())
+    }
+
+    fn session(id: &str) -> Target {
+        Target::Session(id.to_string())
     }
 
     #[test]
@@ -92,25 +136,29 @@ mod tests {
     }
 
     #[test]
-    fn a_path_works_with_or_without_open() {
-        assert_eq!(parsed_path(&["tv", "x.json"]), "x.json");
-        assert_eq!(parsed_path(&["tv", "open", "x.json"]), "x.json");
-        assert_eq!(parsed_path(&["tv", "-"]), "-");
-        assert_eq!(parsed_path(&["tv", "open", "-"]), "-");
+    fn target_follows_the_file_or_session_rule() {
+        assert_eq!(Target::parse(None), Target::MostRecent);
+        assert_eq!(Target::parse(Some("-")), Target::Stdin);
+        for path in ["x.json", "./x", "dir/x", "~/x"] {
+            assert_eq!(Target::parse(Some(path)), file(path));
+        }
+        assert_eq!(Target::parse(Some("k3f9x2")), session("k3f9x2"));
+        assert_eq!(Target::parse(Some("abc")), session("abc"));
     }
 
     #[test]
-    fn bare_tv_shows_help() {
-        let error = Cli::try_parse_from(["tv"]).err().unwrap();
-        assert_eq!(
-            error.kind(),
-            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-        );
+    fn a_target_works_with_or_without_open() {
+        assert_eq!(parsed_target(&["tv", "x.json"]), file("x.json"));
+        assert_eq!(parsed_target(&["tv", "open", "x.json"]), file("x.json"));
+        assert_eq!(parsed_target(&["tv", "-"]), Target::Stdin);
+        assert_eq!(parsed_target(&["tv", "open", "-"]), Target::Stdin);
+        assert_eq!(parsed_target(&["tv", "k3f9x2"]), session("k3f9x2"));
+        assert_eq!(parsed_target(&["tv", "open", "k3f9x2"]), session("k3f9x2"));
     }
 
     #[test]
-    fn open_needs_a_path() {
-        let error = Cli::try_parse_from(["tv", "open"]).err().unwrap();
-        assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+    fn no_target_means_the_most_recent_session() {
+        assert_eq!(parsed_target(&["tv"]), Target::MostRecent);
+        assert_eq!(parsed_target(&["tv", "open"]), Target::MostRecent);
     }
 }

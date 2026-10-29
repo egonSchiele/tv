@@ -16,12 +16,13 @@ use crate::table::Table;
 use app::App;
 use theme::Theme;
 
-/// How long to wait for a key before drawing again. Live reload (ADI-218)
+/// How long to wait for a key before drawing again. Live reload (ADI-221)
 /// will check for file changes on the same tick.
 const TICK: Duration = Duration::from_millis(250);
 
-pub fn run(table: Table) -> anyhow::Result<()> {
+pub fn run(table: Table, session_id: String) -> anyhow::Result<()> {
     let mut app = App::new(table);
+    app.session_id = Some(session_id);
     app.theme = Theme::detect();
     // `ratatui::run` switches the terminal to raw mode and the alternate
     // screen, and puts it back afterwards, also if we return an error or panic.
