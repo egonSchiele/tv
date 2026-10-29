@@ -62,6 +62,17 @@ fn write_view(dir: &Path, pid: u32) {
     fs::write(dir.join("view.json"), view).unwrap();
 }
 
+/// Write `comments.jsonl` into session directory `dir` by hand, one line per
+/// entry, the way the viewer and agent append it.
+fn write_comments(dir: &Path, lines: &[&str]) {
+    fs::write(dir.join("comments.jsonl"), lines.join("\n") + "\n").unwrap();
+}
+
+/// A user's comment on PR 404's title in `examples/prs.json`, unanswered.
+const USER_COMMENT: &str = r#"{"op":"add","id":"c1","author":"user","row_id":"404","column":"title","text":"why?","ts":"2026-10-28T19:03:00Z"}"#;
+/// The agent's reply to it.
+const AGENT_REPLY: &str = r#"{"op":"add","id":"c2","author":"agent","reply_to":"c1","text":"waiting","ts":"2026-10-28T19:04:00Z"}"#;
+
 /// This test's process: alive for as long as the test runs, so a `view.json`
 /// naming it is an open viewer.
 fn open_viewer(dir: &Path) {
@@ -153,6 +164,51 @@ fn save_writes_the_table_to_a_file() {
     let saved: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
     assert_eq!(saved["rows"].as_array().unwrap().len(), 40);
+    assert!(
+        saved.get("comments").is_none(),
+        "no log, no comments: {saved}"
+    );
+}
+
+#[test]
+fn save_writes_the_threads_with_their_derived_fields() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    write_comments(&dir, &[USER_COMMENT, AGENT_REPLY]);
+    let out = home.path().join("out.json");
+    let printed = succeeds(&tv(
+        home.path(),
+        &["save", "abc123", out.to_str().unwrap()],
+        "",
+    ));
+    assert_eq!(printed.lines().count(), 1, "no warning: {printed}");
+    let saved: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out).unwrap()).unwrap();
+    let thread = &saved["comments"][0];
+    assert_eq!(thread["id"], "c1");
+    assert_eq!(thread["value"], "Bump serde to 1.0.229");
+    assert_eq!(thread["awaiting_reply"], false);
+    assert_eq!(thread["orphaned"], false);
+    assert_eq!(thread["messages"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn save_reports_skipped_log_lines() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    write_comments(&dir, &[USER_COMMENT, "not json", AGENT_REPLY]);
+    let out = home.path().join("out.json");
+    let printed = succeeds(&tv(
+        home.path(),
+        &["save", "abc123", out.to_str().unwrap()],
+        "",
+    ));
+    let lines: Vec<&str> = printed.lines().collect();
+    assert!(lines[0].starts_with("wrote 40 rows to "), "{printed}");
+    assert_eq!(
+        lines[1],
+        "comments.jsonl: skipped lines that aren't events: 2"
+    );
 }
 
 #[test]
@@ -251,12 +307,37 @@ fn ls_shows_which_viewers_are_open() {
         line.split_whitespace().nth(2).unwrap().to_string()
     };
     assert!(
-        listing.starts_with("ID      ROWS×COLS  VIEWER  MODIFIED"),
+        listing.starts_with("ID      ROWS×COLS  VIEWER  AWAITING  MODIFIED"),
         "{listing}"
     );
     assert_eq!(viewer("open00"), "open", "{listing}");
     assert_eq!(viewer("dead00"), "-", "{listing}");
     assert_eq!(viewer("none00"), "-", "{listing}");
+}
+
+#[test]
+fn ls_counts_threads_awaiting_a_reply() {
+    let home = tempfile::tempdir().unwrap();
+    write_comments(
+        &write_session(home.path(), "user00", &example()),
+        &[USER_COMMENT],
+    );
+    write_comments(
+        &write_session(home.path(), "agent0", &example()),
+        &[USER_COMMENT, AGENT_REPLY],
+    );
+    write_comments(
+        &write_session(home.path(), "broken", "not json"),
+        &[USER_COMMENT],
+    );
+    let listing = succeeds(&tv(home.path(), &["ls"], ""));
+    let awaiting = |id: &str| {
+        let line = listing.lines().find(|line| line.starts_with(id)).unwrap();
+        line.split_whitespace().nth(3).unwrap().to_string()
+    };
+    assert_eq!(awaiting("user00"), "1", "{listing}");
+    assert_eq!(awaiting("agent0"), "-", "{listing}");
+    assert_eq!(awaiting("broken"), "?", "{listing}");
 }
 
 #[test]

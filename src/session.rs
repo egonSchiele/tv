@@ -3,19 +3,21 @@
 //! A directory counts as a session only once it holds `table.json`. That's
 //! what makes `create` atomic to readers: `table.json` is written atomically
 //! as the last step, so a concurrent `tv ls` sees either no session or a
-//! complete one, never a half-made one. Keep that rule when adding other
+//! complete one, never a half-made one. The comment log, if the table came
+//! with comments, is written before it. Keep that rule when adding other
 //! ways to create sessions (`tv agent new`, ADI-225).
 
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, DirBuilder};
+use std::fs::{self, DirBuilder, OpenOptions};
 use std::hash::{BuildHasher, Hasher, RandomState};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::comments::{self, Event, Log};
 use crate::files;
 use crate::table::Table;
 
@@ -28,12 +30,13 @@ const ID_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 /// them in its status-line errors.
 pub const TABLE_FILE: &str = "table.json";
 pub const VIEW_FILE: &str = "view.json";
+pub const COMMENTS_FILE: &str = "comments.jsonl";
 
 /// Every file a session directory may hold. `remove` deletes exactly these
 /// and nothing else; add a name here when a new file joins the layout.
 /// `goto.json` is ADI-228's cursor request from the agent; it's listed now so
 /// `tv rm` doesn't refuse a session with a pending goto.
-const SESSION_FILES: &[&str] = &[TABLE_FILE, VIEW_FILE, "comments.jsonl", "goto.json"];
+const SESSION_FILES: &[&str] = &[TABLE_FILE, VIEW_FILE, COMMENTS_FILE, "goto.json"];
 
 /// The sessions root. Holds the path only; every method does its IO on call.
 pub struct Sessions {
@@ -64,11 +67,12 @@ pub struct View {
     pub updated_at: String, // RFC 3339, from `time::rfc3339`
 }
 
-/// Enough of `table.json`'s metadata to notice a rewrite: `write_atomic`
-/// renames a new file into place, so the mtime changes, and the size catches
-/// two writes within one clock tick on a filesystem with coarse timestamps.
-/// Public so the viewer can keep the last one it saw; the fields are only
-/// for comparing.
+/// Enough of a file's metadata to notice a change. For `table.json`,
+/// `write_atomic` renames a new file into place, so the mtime changes, and
+/// the size catches two writes within one clock tick on a filesystem with
+/// coarse timestamps. `comments.jsonl` only grows, so its size changes on
+/// every append. Public so the viewer can keep the last one it saw; the
+/// fields are only for comparing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fingerprint {
     modified: SystemTime,
@@ -81,6 +85,8 @@ pub struct Summary {
     pub title: Option<String>,
     pub rows: usize,
     pub columns: usize,
+    /// Threads whose last message is the user's, orphaned ones included.
+    pub awaiting_reply: usize,
     pub modified_at: SystemTime,
 }
 
@@ -116,9 +122,15 @@ impl Sessions {
                 break Session { id, dir };
             }
         };
-        // If this fails (disk full, say), the empty directory stays. `list`
-        // and `open` ignore it, and removing it would need another exempted
-        // delete call (see `clippy.toml`).
+        // If either write fails (disk full, say), the directory stays, maybe
+        // with `comments.jsonl` in it. Without `table.json` it isn't a
+        // session, so `list` and `open` ignore it, and removing it would need
+        // another exempted delete call (see `clippy.toml`).
+        //
+        // The comments go first: the directory isn't a session until
+        // `table.json` exists, so a reader never sees the table without its
+        // comments.
+        session.append_events(&comments::import(&table.comments))?;
         session.write_table(table)?;
         Ok(session)
     }
@@ -260,21 +272,74 @@ impl Session {
     }
 
     /// `table.json`'s fingerprint: one `metadata` call, so the viewer can poll
-    /// it cheaply and parse only when it changed.
+    /// it cheaply and parse only when it changed. `table.json` has to exist,
+    /// so a missing one is an error.
     pub fn table_fingerprint(&self) -> anyhow::Result<Fingerprint> {
         let path = self.dir.join(TABLE_FILE);
-        let reading = || format!("reading {}", path.display());
-        let metadata = fs::metadata(&path).with_context(reading)?;
-        Ok(Fingerprint {
-            modified: metadata.modified().with_context(reading)?,
-            len: metadata.len(),
-        })
+        fingerprint(&path).with_context(|| format!("reading {}", path.display()))
+    }
+
+    /// `comments.jsonl`'s fingerprint, or `None` if there's no log yet, which
+    /// is normal: a session gets one with its first comment.
+    pub fn comments_fingerprint(&self) -> anyhow::Result<Option<Fingerprint>> {
+        let path = self.dir.join(COMMENTS_FILE);
+        match fingerprint(&path) {
+            Ok(fingerprint) => Ok(Some(fingerprint)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+        }
     }
 
     /// Replace the session's table. `Table::save` writes atomically, so a
-    /// reader sees the old table or the new one, never a mix.
+    /// reader sees the old table or the new one, never a mix. `table.json`
+    /// never holds comments (a session keeps them in `comments.jsonl`), so
+    /// `table.comments` is left out.
     pub fn write_table(&self, table: &Table) -> anyhow::Result<()> {
-        table.save(&self.dir.join(TABLE_FILE))
+        let without_comments = Table {
+            comments: Vec::new(),
+            ..table.clone()
+        };
+        without_comments.save(&self.dir.join(TABLE_FILE))
+    }
+
+    /// `comments.jsonl` as read, or an empty `Log` if there's no log yet.
+    /// Lines that don't parse are skipped and listed (`comments::parse_log`).
+    /// Invalid UTF-8 is replaced rather than failing the read, for the same
+    /// reason: one bad byte should cost one line, not the whole log.
+    pub fn read_log(&self) -> anyhow::Result<Log> {
+        let path = self.dir.join(COMMENTS_FILE);
+        match fs::read(&path) {
+            Ok(bytes) => Ok(comments::parse_log(&String::from_utf8_lossy(&bytes))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Log::default()),
+            Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+        }
+    }
+
+    /// Append `events` to `comments.jsonl` in one write, creating the file
+    /// (never the directory), then flush it to disk. No events, no write: the
+    /// viewer calls this every tick.
+    ///
+    /// Not `write_atomic`: a temp file and rename would replace the log, and
+    /// whichever of two writers renamed second would wipe out the other's
+    /// append. With `O_APPEND` each write lands at the end, and one small
+    /// write keeps a line whole. `create(true)` makes the file but not the
+    /// directory, so after `tv rm --force` this fails with `NotFound` instead
+    /// of bringing the session back.
+    pub fn append_events(&self, events: &[Event]) -> anyhow::Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let text = comments::log_text(events)?;
+        let path = self.dir.join(COMMENTS_FILE);
+        let writing = || format!("writing {}", path.display());
+        let mut file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&path)
+            .with_context(writing)?;
+        file.write_all(text.as_bytes())
+            .and_then(|()| file.sync_all())
+            .with_context(writing)
     }
 
     /// Write `view.json` atomically (temp file + rename, like `table.json`).
@@ -308,25 +373,41 @@ impl Session {
         pid.is_some_and(pid_is_alive)
     }
 
-    /// The newest mtime of any file in the directory. Covers `view.json`,
-    /// and `comments.jsonl` once it exists, with no change here. So using
-    /// the viewer counts as modifying the session.
+    /// The newest mtime of any file in the directory, `view.json` and
+    /// `comments.jsonl` included. So using the viewer counts as modifying the
+    /// session.
     pub fn modified_at(&self) -> anyhow::Result<SystemTime> {
         newest_mtime(&self.dir).with_context(|| format!("reading {}", self.dir.display()))
     }
 
-    /// Title, row and column counts, and mtime for listings. Parses the
-    /// table, so it fails if `table.json` doesn't.
+    /// Title, row and column counts, threads awaiting a reply, and mtime for
+    /// listings. Parses the table, so it fails if `table.json` doesn't.
     pub fn summary(&self) -> anyhow::Result<Summary> {
         let table = self.load_table()?;
+        // A listing shows the count; the viewer and `tv save` are where a
+        // skipped log line is reported.
+        let threads = comments::threads(&self.read_log()?.events, &table);
         Ok(Summary {
             id: self.id.clone(),
+            awaiting_reply: threads
+                .iter()
+                .filter(|thread| thread.awaiting_reply)
+                .count(),
             title: table.title,
             rows: table.rows.len(),
             columns: table.columns.len(),
             modified_at: self.modified_at()?,
         })
     }
+}
+
+/// One `metadata` call: what `Fingerprint` compares.
+fn fingerprint(path: &Path) -> io::Result<Fingerprint> {
+    let metadata = fs::metadata(path)?;
+    Ok(Fingerprint {
+        modified: metadata.modified()?,
+        len: metadata.len(),
+    })
 }
 
 /// `kill(pid, 0)`, which sends no signal: `Ok` means alive, `EPERM` means
@@ -477,6 +558,32 @@ mod tests {
             column: Some("title".to_string()),
             updated_at: "2026-10-28T19:02:11Z".to_string(),
         }
+    }
+
+    /// `table()` with two threads, as a saved file has them: one awaiting a
+    /// reply on row `#0`, one the agent answered on row `#1`.
+    fn commented_table() -> Table {
+        let mut table = table();
+        table.comments = serde_json::from_value(serde_json::json!([
+            {"id": "c1", "row_id": "#0", "column": "a", "messages": [
+                {"id": "c1", "author": "user", "text": "why?", "ts": "2026-10-28T19:03:00Z"}
+            ]},
+            {"id": "c2", "row_id": "#1", "column": "b", "messages": [
+                {"id": "c2", "author": "user", "text": "and this?", "ts": "2026-10-28T19:04:00Z"},
+                {"id": "c3", "author": "agent", "text": "fixed", "ts": "2026-10-28T19:05:00Z"}
+            ]}
+        ]))
+        .unwrap();
+        table
+    }
+
+    /// One event of the log format, for appending.
+    fn event(id: &str) -> Event {
+        comments::parse_log(&format!(
+            r##"{{"op":"add","id":"{id}","author":"user","row_id":"#0","column":"a","text":"hi","ts":"2026-10-28T19:03:00Z"}}"##
+        ))
+        .events
+        .remove(0)
     }
 
     fn set_table_mtime(session: &Session, time: SystemTime) {
@@ -637,6 +744,16 @@ mod tests {
     }
 
     #[test]
+    fn remove_deletes_a_comment_log_too() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&commented_table()).unwrap();
+        let dir = session.dir.clone();
+        assert!(dir.join(COMMENTS_FILE).exists());
+        sessions.remove(session).unwrap();
+        assert!(!dir.exists());
+    }
+
+    #[test]
     fn remove_deletes_a_leftover_temp_file() {
         let (_dir, sessions) = sessions();
         let session = sessions.create(&table()).unwrap();
@@ -693,7 +810,132 @@ mod tests {
         assert_eq!(summary.id, session.id());
         assert_eq!(summary.title.as_deref(), Some("Things"));
         assert_eq!((summary.rows, summary.columns), (2, 2));
+        assert_eq!(summary.awaiting_reply, 0);
         assert_eq!(summary.modified_at, session.modified_at().unwrap());
+    }
+
+    #[test]
+    fn summary_counts_threads_awaiting_a_reply() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&commented_table()).unwrap();
+        // `c1` is the user's and unanswered; `c2` has the agent's reply.
+        assert_eq!(session.summary().unwrap().awaiting_reply, 1);
+    }
+
+    #[test]
+    fn create_moves_a_files_comments_into_the_log() {
+        let (_dir, sessions) = sessions();
+        let table = commented_table();
+        let session = sessions.create(&table).unwrap();
+        assert_eq!(
+            session.read_log().unwrap().events,
+            comments::import(&table.comments)
+        );
+        let text = fs::read_to_string(session.dir.join(TABLE_FILE)).unwrap();
+        assert!(!text.contains("\"comments\""), "{text}");
+
+        // Folded against the loaded table, the threads come back with their
+        // derived fields. Compared as JSON: that's what a file holds.
+        let loaded = session.load_table().unwrap();
+        let threads = comments::threads(&session.read_log().unwrap().events, &loaded);
+        let mut expected = serde_json::to_value(&table.comments).unwrap();
+        expected[0]["value"] = serde_json::json!(1);
+        expected[0]["awaiting_reply"] = serde_json::json!(true);
+        expected[0]["orphaned"] = serde_json::json!(false);
+        expected[1]["value"] = serde_json::json!("y");
+        expected[1]["orphaned"] = serde_json::json!(false);
+        assert_eq!(serde_json::to_value(&threads).unwrap(), expected);
+    }
+
+    #[test]
+    fn create_without_comments_leaves_no_log() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        assert!(!session.dir.join(COMMENTS_FILE).exists());
+    }
+
+    #[test]
+    fn write_table_leaves_comments_out() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        session.write_table(&commented_table()).unwrap();
+        let text = fs::read_to_string(session.dir.join(TABLE_FILE)).unwrap();
+        assert!(!text.contains("\"comments\""), "{text}");
+        assert_eq!(session.load_table().unwrap().rows, table().rows);
+    }
+
+    #[test]
+    fn appends_read_back_in_order() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        assert_eq!(session.read_log().unwrap(), Log::default());
+
+        session.append_events(&[]).unwrap();
+        assert!(
+            !session.dir.join(COMMENTS_FILE).exists(),
+            "no events, no file"
+        );
+
+        session.append_events(&[event("c1"), event("c2")]).unwrap();
+        session.append_events(&[event("c3")]).unwrap();
+        let expected = [event("c1"), event("c2"), event("c3")];
+        assert_eq!(session.read_log().unwrap().events, expected);
+    }
+
+    #[test]
+    fn a_bad_byte_costs_at_most_its_line() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        let good = comments::log_text(&[event("c1")]).unwrap();
+        // Two good lines with a line of invalid UTF-8 between them.
+        let mut bytes = good.clone().into_bytes();
+        bytes.extend(b"\xff\xfe\n");
+        bytes.extend(good.as_bytes());
+        let path = session.dir.join(COMMENTS_FILE);
+        fs::write(&path, &bytes).unwrap();
+        let log = session.read_log().unwrap();
+        assert_eq!(log.events.len(), 2);
+        assert_eq!(
+            log.warning().as_deref(),
+            Some("skipped lines that aren't events: 2")
+        );
+
+        // A bad byte inside a line's text is replaced, and the line still reads.
+        let mut bytes = good.replace("hi", "h?i").into_bytes();
+        let question = bytes.iter().position(|&byte| byte == b'?').unwrap();
+        bytes[question] = 0xff;
+        fs::write(&path, &bytes).unwrap();
+        let log = session.read_log().unwrap();
+        let Event::Add(add) = &log.events[0] else {
+            panic!("expected an add");
+        };
+        assert_eq!(add.text, "h\u{fffd}i");
+    }
+
+    #[test]
+    fn an_append_to_a_removed_session_fails_and_brings_nothing_back() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        let dir = session.dir.clone();
+        sessions
+            .remove(sessions.open(session.id()).unwrap())
+            .unwrap();
+        let error = session.append_events(&[event("c1")]).unwrap_err();
+        let io_error = error.downcast_ref::<io::Error>().unwrap();
+        assert_eq!(io_error.kind(), io::ErrorKind::NotFound);
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn the_comments_fingerprint_changes_with_each_append() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        assert_eq!(session.comments_fingerprint().unwrap(), None);
+        session.append_events(&[event("c1")]).unwrap();
+        let first = session.comments_fingerprint().unwrap();
+        assert!(first.is_some());
+        session.append_events(&[event("c2")]).unwrap();
+        assert_ne!(session.comments_fingerprint().unwrap(), first);
     }
 
     #[test]

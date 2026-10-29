@@ -2,7 +2,7 @@
 //! which cells to highlight. Pure functions over two tables, so they're
 //! tested without a terminal.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use super::app::Cursor;
 use crate::table::Table;
@@ -42,11 +42,7 @@ pub fn same_cell(old: &Table, cursor: Cursor, new: &Table) -> Cursor {
 /// Without a key, rows match by index, so a row inserted at the top marks
 /// every row below it as changed. That's expected, not a bug.
 pub fn changed_cells(old: &Table, new: &Table) -> HashSet<Cursor> {
-    // Row IDs are unique: `validate_key` checks keyed tables, and unkeyed
-    // ones are `#<index>`.
-    let old_rows: HashMap<String, usize> = (0..old.rows.len())
-        .map(|index| (old.row_id(index), index))
-        .collect();
+    let old_rows = old.row_indices();
     let old_columns: HashSet<&str> = old
         .columns
         .iter()

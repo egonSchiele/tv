@@ -96,6 +96,8 @@ Session IDs are 6 lowercase alphanumeric characters (e.g. `k3f9x2`), short enoug
   comments.jsonl  # append-only event log, written by both sides
 ```
 
+A session's `table.json` never holds comments: they live only in `comments.jsonl`. Opening a file that has `comments` moves them into the new session's log, and `tv save` writes them back out from it.
+
 ### `view.json`
 
 Written by the viewer when the cursor moves (debounced ~100ms) and on start/exit.
@@ -126,6 +128,10 @@ One JSON event per line. Appends are small single writes, safe enough for two lo
 - A thread is **awaiting reply** if its last message is from `user`. This is derived from the log, so there's no read/resolved state to manage.
 - A thread is **orphaned** if its row or column no longer exists in the table. Orphaned threads are kept and reported to the agent; the viewer shows a count in the status bar.
 - Comment IDs are `c` + 5 random alphanumeric characters.
+- A `delete` of a reply removes just that reply. A `delete` counts wherever it is in the log, before or after its `add`.
+- A reply joins the thread its `reply_to` names wherever it is in the log, so one logged before its comment still attaches. A reply to anything but a top-level comment is dropped.
+- If two `add`s have the same ID, the first in the log wins.
+- A line that doesn't parse is skipped rather than failing the whole log, which only grows; the viewer and `tv save` say which lines were skipped.
 
 ### Live updates
 
@@ -143,7 +149,7 @@ On table reload:
 | `tv open` | Open the most recently modified session. |
 | `tv open <id>` | Open a session. |
 | `tv open <file.json>` | Create a new session from the file (including comments) and open it. |
-| `tv ls` | List sessions: id, title, rows × cols, whether a viewer is open, open comment count, last modified. |
+| `tv ls` | List sessions: id, title, rows × cols, whether a viewer is open, how many threads are awaiting a reply, last modified. |
 | `tv save <id> <file.json>` | Write table + comments to a file. |
 | `tv rm <id>… [--force]` | Delete sessions. Refuses a session whose viewer is open, unless `--force`. |
 
@@ -316,9 +322,9 @@ src/
   main.rs          # clap definitions, dispatch
   table.rs         # Table/Column/Value types, parsing, shorthand, inference, validation, row IDs
   files.rs         # atomic writes, ~ expansion, slugs (shared by :w and sessions)
-  session.rs       # paths, ID generation, listing, most-recent lookup, safe removal, view.json and viewer-open check
+  session.rs       # paths, ID generation, listing, most-recent lookup, safe removal, view.json and viewer-open check, reading and appending comments.jsonl
   time.rs          # RFC 3339 timestamps (ls and view.json now; comments later)
-  comments.rs      # event log append/read, folding events into threads
+  comments.rs      # comment events and threads, the log's line format, folding events into threads
   agent.rs         # tv agent subcommands
   agent_help.txt   # guide text, include_str!'d
   viewer/
@@ -326,7 +332,7 @@ src/
     app.rs         # App state: table, cursor, scroll, mode (Grid/Detail/Record/Input/Help), highlights
     render.rs      # draw functions; pure, take &App
     layout.rs      # column widths, visible column range given pinned column and terminal width
-    sync.rs        # the viewer's file IO: writes view.json, polls table.json
+    sync.rs        # the viewer's file IO: writes view.json, polls table.json and comments.jsonl
     diff.rs        # after a reload: where the cursor goes, which cells changed
 ```
 

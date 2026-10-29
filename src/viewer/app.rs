@@ -12,6 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::diff;
 use super::layout::{self, VisibleColumn};
 use super::theme::Theme;
+use crate::comments::{self, Event, Thread};
 use crate::files;
 use crate::table::Table;
 
@@ -392,6 +393,10 @@ pub struct App {
     /// status line shows it whenever no message is up.
     pub reload_error: Option<String>,
     highlight: Option<Highlight>, // set only through set_table
+    /// The session's comment log as of the last poll, and the threads folded
+    /// from it against `table`. `refold` keeps `threads` in step with both.
+    events: Vec<Event>,
+    threads: Vec<Thread>,
     /// The current file in vim's sense: where the last successful save went.
     /// It starts as `None` even after `tv file.json`, so `:w` and `s` default
     /// to `./<title-slug>.json` as the spec says. That's deliberate.
@@ -421,6 +426,8 @@ impl App {
             message: None,
             reload_error: None,
             highlight: None,
+            events: Vec::new(),
+            threads: Vec::new(),
             save_path: None,
             should_quit: false,
         }
@@ -445,12 +452,31 @@ impl App {
             until: now + HIGHLIGHT_DURATION,
         });
         self.reload_error = None;
+        self.refold();
         self.move_to(cursor.row, cursor.col); // clamps and scrolls into view
         // Detail and Record need a cell under the cursor, the same check
         // `open_cell_view` makes before opening them.
         if matches!(self.mode, Mode::Detail | Mode::Record) && !self.has_cell() {
             self.mode = Mode::Grid;
         }
+    }
+
+    /// Replace the comment log after a poll, and refold.
+    pub fn set_events(&mut self, events: Vec<Event>) {
+        self.events = events;
+        self.refold();
+    }
+
+    /// The session's comment threads, folded against the current table.
+    #[cfg(test)] // render reads them in ADI-224
+    pub fn threads(&self) -> &[Thread] {
+        &self.threads
+    }
+
+    /// Fold `events` against `table`. `set_events` and `set_table` both call
+    /// it: a reload can orphan a thread or change its `value`.
+    fn refold(&mut self) {
+        self.threads = comments::threads(&self.events, &self.table);
     }
 
     /// Whether the last reload changed this cell, for the next few seconds.
@@ -636,7 +662,8 @@ impl App {
         PathBuf::from(format!("./{name}.json"))
     }
 
-    /// Save the table and say how it went in the status line. Saving over an
+    /// Save the table and its comment threads, and say how it went in the
+    /// status line. Saving over an
     /// existing file is refused, unless it's the current file or `force` is
     /// set (vim's rule). The writing itself is `Table::save`.
     fn save(&mut self, path: Option<String>, force: bool) {
@@ -648,7 +675,13 @@ impl App {
             self.set_message(format!("{} exists; use :w! to overwrite", target.display()));
             return;
         }
-        match self.table.save(&target) {
+        // The threads go in the file: a session keeps them in its log, not in
+        // `table`.
+        let saved = Table {
+            comments: self.threads.clone(),
+            ..self.table.clone()
+        };
+        match saved.save(&target) {
             Ok(()) => {
                 self.set_message(format!(
                     "wrote {} rows to {}",
@@ -1490,5 +1523,56 @@ mod tests {
         app.reload_error = Some("table.json: broken".to_string());
         app.set_table(grid_table(3, 3, None), Instant::now());
         assert_eq!(app.reload_error, None);
+    }
+
+    /// Log lines for a comment by `author` on `prs.json`'s PR `row_id`.
+    fn comment_on(id: &str, author: &str, row_id: &str, column: &str) -> String {
+        format!(
+            r#"{{"op":"add","id":"{id}","author":"{author}","row_id":"{row_id}","column":"{column}","text":"{id} text","ts":"2026-10-28T19:03:00Z"}}"#
+        )
+    }
+
+    fn log(lines: &[String]) -> Vec<Event> {
+        comments::parse_log(&lines.join("\n")).events
+    }
+
+    #[test]
+    fn set_events_folds_the_log() {
+        let mut app = prs_app();
+        assert!(app.threads.is_empty(), "{:?}", app.threads);
+        app.set_events(log(&[comment_on("c1", "user", "404", "title")]));
+        assert_eq!(app.threads.len(), 1);
+        assert_eq!(
+            app.threads[0].value,
+            serde_json::json!("Bump serde to 1.0.229")
+        );
+        assert!(app.threads[0].awaiting_reply);
+    }
+
+    #[test]
+    fn a_reload_without_the_commented_row_orphans_its_thread() {
+        let mut app = prs_app();
+        app.set_events(log(&[comment_on("c1", "user", "404", "title")]));
+        assert!(!app.threads[0].orphaned);
+        let mut table = app.table().clone();
+        table.rows.retain(|row| row["number"] != 404);
+        app.set_table(table, Instant::now());
+        assert!(app.threads[0].orphaned);
+    }
+
+    #[test]
+    fn colon_w_saves_the_threads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        let mut app = prs_app();
+        app.set_events(log(&[comment_on("c1", "user", "404", "title")]));
+        run_colon(&mut app, &format!("w {}", path.display()));
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved["comments"],
+            serde_json::to_value(&app.threads).unwrap()
+        );
+        assert_eq!(saved["comments"][0]["awaiting_reply"], true);
     }
 }

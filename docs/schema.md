@@ -32,7 +32,7 @@
 | `columns[].type` | no | `string`, `number`, or `bool`. Inferred if omitted. Only affects alignment: numbers are right-aligned. |
 | `columns[].width` | no | Maximum display width. Defaults to 40. |
 | `rows` | yes | Array of objects, one per row. |
-| `comments` | no | Only present in saved files. Imported when the file is opened. |
+| `comments` | no | Only present in saved files. A list of comment threads; see [Comments](#comments). Imported when the file is opened. |
 
 Unknown top-level fields are ignored.
 
@@ -70,3 +70,29 @@ A table that fails validation is rejected with an error naming the row, for exam
 | object or array | Compact JSON, e.g. `["bug","ci"]`. The cell detail view pretty-prints it. |
 
 Fields in a row that aren't in `columns` are ignored when `columns` is given.
+
+## Comments
+
+`tv save` and the viewer's `:w` write a session's comment threads into `comments`. Each thread is a comment on one cell, followed by its replies:
+
+```json
+{
+  "id": "c7h2k1",
+  "row_id": "412",
+  "column": "title",
+  "value": "Fix login redirect",
+  "awaiting_reply": false,
+  "orphaned": false,
+  "messages": [
+    { "id": "c7h2k1", "author": "user", "text": "Why is this one still open?", "ts": "2026-10-28T19:03:00Z" },
+    { "id": "c9m4p0", "author": "agent", "text": "Waiting on review from infra.", "ts": "2026-10-28T19:04:12Z" }
+  ]
+}
+```
+
+- `row_id` is the row's key value as text, or `#<index>` without a key. `column` is a column name.
+- `author` is `user` or `agent`. `ts` is a UTC timestamp.
+- `value`, `awaiting_reply` and `orphaned` are worked out when the file is saved: the cell's value then (`null` if it's gone), whether the user wrote last, and whether the row or column no longer exists. Opening the file ignores them, and they may be left out.
+- A thread with no messages is skipped when the file is opened.
+
+Opening the file moves the threads into the new session's comment log, keeping their IDs and timestamps.
