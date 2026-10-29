@@ -18,3 +18,20 @@
 "├──────────────────────────────────────────────────────────────────────────────────────────────────┤"
 "│ rows 40  cols 9  ·  q to quit                                                                    │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────┘"
+--- styles
+row 1: 1..9 BOLD, 10..62 BOLD, 63..75 BOLD, 76..83 BOLD, 84..95 BOLD
+row 2: 1..9 BOLD | REVERSED, 9..96 bg=Indexed(236)
+row 3: 1..9 bg=Indexed(236)
+row 4: 1..9 bg=Indexed(236)
+row 5: 1..9 bg=Indexed(236)
+row 6: 1..9 bg=Indexed(236)
+row 7: 1..9 bg=Indexed(236)
+row 8: 1..9 bg=Indexed(236)
+row 9: 1..9 bg=Indexed(236)
+row 10: 1..9 bg=Indexed(236)
+row 11: 1..9 bg=Indexed(236)
+row 12: 1..9 bg=Indexed(236)
+row 13: 1..9 bg=Indexed(236)
+row 14: 1..9 bg=Indexed(236)
+row 15: 1..9 bg=Indexed(236)
+row 16: 1..9 bg=Indexed(236)

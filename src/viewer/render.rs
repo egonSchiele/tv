@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use serde_json::Value;
@@ -71,9 +71,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 fn header_line(app: &App, visible: &[VisibleColumn]) -> Line<'static> {
     let columns = &app.table().columns;
-    let bold = Style::new().add_modifier(Modifier::BOLD);
-    grid_line(visible, |col| {
-        (columns[col].display_name(), align(columns[col].kind), bold)
+    let header = app.theme.header;
+    grid_line(visible, Style::new(), |col| {
+        (
+            columns[col].display_name(),
+            align(columns[col].kind),
+            header,
+        )
     })
 }
 
@@ -85,7 +89,12 @@ fn body_lines(app: &App, visible: &[VisibleColumn], height: u16) -> Vec<Line<'st
     (app.first_row..table.rows.len())
         .take(usize::from(height))
         .map(|row| {
-            grid_line(visible, |col| {
+            let row_style = if row == app.cursor.row {
+                app.theme.cursor_line
+            } else {
+                Style::new()
+            };
+            grid_line(visible, row_style, |col| {
                 let column = &table.columns[col];
                 let text = cell_text(table.cell(row, &column.name));
                 (text, align(column.kind), cell_style(app, row, col))
@@ -94,17 +103,25 @@ fn body_lines(app: &App, visible: &[VisibleColumn], height: u16) -> Vec<Line<'st
         .collect()
 }
 
-/// The one place that decides how a body cell looks. The cursor, comment
-/// markers, and change highlights get added here.
+/// The one place that decides how a body cell looks: the cursor cell is
+/// brightest, then the cursor's row and column, then everything else. Comment
+/// markers and change highlights get added here.
 fn cell_style(app: &App, row: usize, col: usize) -> Style {
+    let theme = &app.theme;
+    let cursor = app.cursor;
+    let mut style = if (row, col) == (cursor.row, cursor.col) {
+        theme.cursor_cell
+    } else if row == cursor.row || col == cursor.col {
+        theme.cursor_line
+    } else {
+        Style::new()
+    };
     let table = app.table();
-    let value = table.cell(row, &table.columns[col].name);
-    let mut style = Style::new();
-    if (row, col) == (app.cursor.row, app.cursor.col) {
-        style = style.add_modifier(Modifier::REVERSED);
-    }
-    if value.is_none_or(Value::is_null) {
-        style = style.add_modifier(Modifier::DIM);
+    if table
+        .cell(row, &table.columns[col].name)
+        .is_none_or(Value::is_null)
+    {
+        style = style.patch(theme.null);
     }
     style
 }
@@ -120,8 +137,10 @@ fn align(kind: Option<ColumnType>) -> Align {
 /// The only code that lays out a grid row: each visible column's text is
 /// sized with `layout::fit`, padded, and followed by the separator. The header
 /// and body rows both go through here; `cell` says what goes in each column.
+/// Separators take `row_style`, so a highlighted row isn't striped at each `│`.
 fn grid_line(
     visible: &[VisibleColumn],
+    row_style: Style,
     cell: impl Fn(usize) -> (String, Align, Style),
 ) -> Line<'static> {
     let padding = " ".repeat(usize::from(layout::CELL_PADDING));
@@ -132,7 +151,7 @@ fn grid_line(
             let sized = layout::fit(&text, column.width, align);
             [
                 Span::styled(format!("{padding}{sized}{padding}"), style),
-                Span::raw(layout::SEPARATOR),
+                Span::styled(layout::SEPARATOR, row_style),
             ]
         })
         .collect();
@@ -159,9 +178,11 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
-    use crate::snapshot::assert_snapshot;
+    use crate::snapshot::{assert_snapshot, buffer_view};
     use crate::table::Table;
+    use crate::viewer::app::Cursor;
     use crate::viewer::sync_viewport;
+    use crate::viewer::theme::Theme;
 
     fn app(json: &str) -> App {
         App::new(Table::parse(json).unwrap())
@@ -179,8 +200,9 @@ mod tests {
         terminal
     }
 
+    /// The screen's text plus its style runs, for snapshots.
     fn render_text(app: &mut App, width: u16, height: u16) -> String {
-        render(app, width, height).backend().to_string()
+        buffer_view(render(app, width, height).backend().buffer())
     }
 
     #[test]
@@ -238,13 +260,31 @@ mod tests {
 
     #[test]
     fn header_is_bold_and_nulls_are_dim() {
-        let mut app = app(r#"[{"a": null, "b": 1}]"#);
-        let terminal = render(&mut app, 20, 6);
-        let buffer = terminal.backend().buffer();
-        // Row 0 is the top border; x 0 is the left border and x 1 is padding.
-        assert!(buffer[(2, 1)].modifier.contains(Modifier::BOLD));
-        assert!(buffer[(2, 2)].modifier.contains(Modifier::DIM));
-        assert!(!buffer[(6, 2)].modifier.contains(Modifier::DIM));
+        let mut app = app(r#"[{"a": null, "b": 1}, {"a": 2, "b": null}, {"a": 3, "b": 4}]"#);
+        app.cursor = Cursor { row: 2, col: 1 };
+        assert_snapshot("nulls_and_header", &render_text(&mut app, 20, 7));
+    }
+
+    #[test]
+    fn cursor_bottom_right() {
+        let mut app = prs();
+        app.cursor = Cursor { row: 39, col: 8 };
+        assert_snapshot("cursor_bottom_right", &render_text(&mut app, 70, 12));
+    }
+
+    #[test]
+    fn cursor_mid_table() {
+        let mut app = prs();
+        app.cursor = Cursor { row: 3, col: 2 };
+        assert_snapshot("cursor_mid_table", &render_text(&mut app, 70, 12));
+    }
+
+    #[test]
+    fn cursor_mid_table_mono() {
+        let mut app = prs();
+        app.theme = Theme::mono();
+        app.cursor = Cursor { row: 3, col: 2 };
+        assert_snapshot("cursor_mid_table_mono", &render_text(&mut app, 70, 12));
     }
 
     #[test]

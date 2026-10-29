@@ -3,6 +3,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::layout::{self, VisibleColumn};
+use super::theme::Theme;
 use crate::table::Table;
 
 /// Indices into `table.rows` and `table.columns`.
@@ -136,6 +137,7 @@ pub struct App {
     pub first_row: usize, // vertical scroll offset
     pub first_col: usize, // index of the first non-pinned column shown
     viewport: Viewport,   // set only through set_viewport
+    pub theme: Theme,
     pub should_quit: bool,
 }
 
@@ -150,6 +152,7 @@ impl App {
             first_row: 0,
             first_col: 0,
             viewport: Viewport::default(),
+            theme: Theme::color(),
             should_quit: false,
         }
     }
