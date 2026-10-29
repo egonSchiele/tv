@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 ///
 /// Errors are plain `io::Error`s, which don't name the path; callers add it as
 /// context, the way `Table::from_path` does.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "removes only the temp file this call created"
+)]
 pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     let temp = temp_path(path)?;
     // `create_new` fails rather than clobber an existing file. If it fails,

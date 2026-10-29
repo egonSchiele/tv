@@ -5,8 +5,9 @@ all: build
 build:
 	cargo build
 
+# A session per run, kept out of your real ~/.tv. `make clean` removes them.
 run:
-	cargo run -- open examples/prs.json
+	TV_HOME=$(CURDIR)/target/tv-home cargo run -- open examples/prs.json
 
 test:
 	cargo test

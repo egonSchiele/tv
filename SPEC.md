@@ -316,7 +316,8 @@ src/
   main.rs          # clap definitions, dispatch
   table.rs         # Table/Column/Value types, parsing, shorthand, inference, validation, row IDs
   files.rs         # atomic writes, ~ expansion, slugs (shared by :w and sessions)
-  session.rs       # paths, ID generation, listing, most-recent lookup
+  session.rs       # paths, ID generation, listing, most-recent lookup, safe removal
+  time.rs          # RFC 3339 timestamps (ls now; comments and view.json later)
   comments.rs      # event log append/read, folding events into threads
   agent.rs         # tv agent subcommands
   agent_help.txt   # guide text, include_str!'d
