@@ -1,15 +1,15 @@
 //! The viewer's half of the session directory: `view.json` out (where the
-//! cursor is), `table.json` in (live reload), and `comments.jsonl` both ways.
-//! Everything the event loop does to the filesystem goes through here, with
-//! the time passed in so tests control it. `tick` is a list of steps; a later
-//! poll (`goto.json`) is one more step.
+//! cursor is), `table.json` in (live reload), `comments.jsonl` both ways, and
+//! `goto.json` in (the agent moving the cursor). Everything the event loop
+//! does to the filesystem goes through here, with the time passed in so tests
+//! control it. `tick` is a list of steps, one per file.
 
 use std::io;
 use std::time::{Duration, Instant, SystemTime};
 
 use super::app::App;
 use crate::comments::Log;
-use crate::session::{COMMENTS_FILE, Fingerprint, Session, TABLE_FILE, VIEW_FILE, View};
+use crate::session::{COMMENTS_FILE, Fingerprint, GOTO_FILE, Session, TABLE_FILE, VIEW_FILE, View};
 use crate::table::Table;
 use crate::time;
 
@@ -94,6 +94,7 @@ impl SessionSync {
         self.write_pending(app);
         self.poll_table(app, now);
         self.poll_comments(app);
+        self.poll_goto(app);
         self.write_view_if_moved(app, now);
     }
 
@@ -136,6 +137,22 @@ impl SessionSync {
                 app.set_events(log.events);
             }
             Err(error) => app.set_message(file_error(COMMENTS_FILE, &error)),
+        }
+    }
+
+    /// Apply a `goto.json` from `tv agent goto` once the viewer is ready for
+    /// one (`App::ready_for_goto`). Until then the file stays where it is. It
+    /// runs after the polls, so a push and a `goto` to one of its new rows
+    /// work in the same tick, and before the `view.json` write, which then
+    /// records the new cell.
+    fn poll_goto(&self, app: &mut App) {
+        if !app.ready_for_goto() {
+            return;
+        }
+        match self.session.take_goto() {
+            Ok(None) => {}
+            Ok(Some(goto)) => app.go_to(&goto.row_id, goto.column.as_deref()),
+            Err(error) => app.set_message(file_error(GOTO_FILE, &error)),
         }
     }
 
@@ -247,9 +264,9 @@ fn is_not_found(error: &anyhow::Error) -> bool {
 mod tests {
     use super::*;
     use crate::comments::{self, Event};
-    use crate::session::Sessions;
+    use crate::session::{Goto, Sessions};
     use crate::table::Table;
-    use crate::viewer::app::Cursor;
+    use crate::viewer::app::{Cursor, Mode};
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::fs::{self, File};
     use std::path::PathBuf;
@@ -698,5 +715,94 @@ mod tests {
         fixture.sync.tick(&mut fixture.app, Instant::now());
         assert_eq!(fixture.app.threads().len(), 1);
         assert_eq!(fixture.message(), None, "the same bad line, reported again");
+    }
+
+    fn goto(row_id: &str, column: Option<&str>) -> Goto {
+        Goto {
+            row_id: row_id.to_string(),
+            column: column.map(str::to_string),
+        }
+    }
+
+    impl Fixture {
+        fn goto_path(&self) -> PathBuf {
+            self.view_path.with_file_name(GOTO_FILE)
+        }
+    }
+
+    #[test]
+    fn a_goto_moves_the_cursor_on_the_next_tick() {
+        let mut fixture = start(table());
+        fixture
+            .other_side()
+            .write_goto(&goto("b", Some("n")))
+            .unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.cursor, Cursor { row: 1, col: 1 });
+        assert_eq!(fixture.message(), Some("the agent moved the cursor here"));
+        assert!(!fixture.goto_path().exists());
+    }
+
+    #[test]
+    fn a_goto_waits_until_the_grid() {
+        let mut fixture = start(table());
+        fixture.app.mode = Mode::Detail;
+        fixture.other_side().write_goto(&goto("b", None)).unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.cursor.row, 0);
+        assert!(fixture.goto_path().exists());
+
+        fixture.app.mode = Mode::Grid;
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.cursor, Cursor { row: 1, col: 0 });
+        assert!(!fixture.goto_path().exists());
+    }
+
+    #[test]
+    fn a_broken_goto_is_reported_once_and_gone() {
+        let mut fixture = start(table());
+        fs::write(fixture.goto_path(), "not json").unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        let message = fixture.message().unwrap();
+        assert!(message.starts_with("goto.json: "), "{message}");
+        assert!(!fixture.goto_path().exists());
+        assert_eq!(fixture.app.cursor.row, 0);
+
+        fixture.app.message = None;
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.message(), None);
+    }
+
+    #[test]
+    fn a_push_and_a_goto_to_its_new_row_work_in_one_tick() {
+        let mut fixture = start(table());
+        let now = Instant::now();
+        fixture.sync.tick(&mut fixture.app, now);
+        let pushed = Table::parse(
+            r#"{"key": "id", "rows": [{"id": "a", "n": 1}, {"id": "b", "n": 2}, {"id": "c", "n": 3}]}"#,
+        )
+        .unwrap();
+        let other = fixture.other_side();
+        other.write_table(&pushed).unwrap();
+        other.write_goto(&goto("c", None)).unwrap();
+        fixture.sync.tick(&mut fixture.app, now + MS_30);
+        assert_eq!(fixture.app.cursor.row, 2);
+    }
+
+    #[test]
+    fn a_goto_reaches_view_json_after_the_debounce() {
+        let mut fixture = start(table());
+        let now = Instant::now();
+        fixture
+            .other_side()
+            .write_goto(&goto("b", Some("n")))
+            .unwrap();
+        fixture.sync.tick(&mut fixture.app, now);
+        fixture.sync.tick(&mut fixture.app, now + MS_150);
+        let view = fixture.view();
+        assert_eq!(
+            (view.row_id.as_deref(), view.column.as_deref()),
+            (Some("b"), Some("n"))
+        );
     }
 }

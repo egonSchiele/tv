@@ -3,5 +3,5 @@
 disallowed-methods = [
     { path = "std::fs::remove_dir_all", reason = "never delete recursively; remove known files, then remove_dir (see session.rs)" },
     { path = "std::fs::remove_dir", reason = "only Sessions::remove deletes directories" },
-    { path = "std::fs::remove_file", reason = "only Sessions::remove and files::write_atomic delete files" },
+    { path = "std::fs::remove_file", reason = "only Sessions::remove, files::write_atomic and Session::take_goto delete files" },
 ]

@@ -10,7 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::comments::{self, Add, Author, Event, Log, Message, Thread};
-use crate::session::{COMMENTS_FILE, Session, Sessions};
+use crate::session::{COMMENTS_FILE, Goto, Session, Sessions};
 use crate::table::{Meta, Row, Table};
 use crate::time;
 
@@ -53,6 +53,15 @@ pub enum AgentCommand {
     },
     /// List sessions, most recently modified first.
     Sessions,
+    /// Move the user's cursor to a cell.
+    Goto {
+        id: String,
+        #[arg(long)]
+        row: String,
+        /// Without it, the cursor keeps its column.
+        #[arg(long)]
+        col: Option<String>,
+    },
 }
 
 /// The table `new` and `push` read, and what to set on it.
@@ -116,6 +125,9 @@ pub fn run(sessions: &Sessions, command: &AgentCommand) -> anyhow::Result<()> {
             serde_json::to_string(&comment(sessions, id, row, col, text)?)?
         }
         AgentCommand::Sessions => serde_json::to_string(&list_sessions(sessions)?)?,
+        AgentCommand::Goto { id, row, col } => {
+            serde_json::to_string(&goto(sessions, id, row, col.as_deref())?)?
+        }
     };
     println!("{json}");
     Ok(())
@@ -363,6 +375,39 @@ fn check_cell(table: &Table, row_id: &str, column: Option<&str>) -> anyhow::Resu
         bail!("no column \"{column}\"");
     }
     Ok(())
+}
+
+fn goto(
+    sessions: &Sessions,
+    id: &str,
+    row_id: &str,
+    column: Option<&str>,
+) -> anyhow::Result<Focus> {
+    let session = sessions.open(id)?;
+    let table = session.load_table()?;
+    check_cell(&table, row_id, column)?;
+    let viewer_open = session.viewer_open();
+    // Without `--col` the cursor keeps its column: the open viewer's, which
+    // `view.json` names, or the one a new viewer starts on. A closed viewer's
+    // `view.json` doesn't say, since a new viewer doesn't restore it.
+    let focus_column = match column {
+        Some(column) => Some(column.to_string()),
+        None if viewer_open => session.read_view()?.and_then(|view| view.column),
+        None => table
+            .columns
+            .get(table.start_column())
+            .map(|column| column.name.clone()),
+    };
+    session.write_goto(&Goto {
+        row_id: row_id.to_string(),
+        column: column.map(str::to_string),
+    })?;
+    Ok(Focus::at(
+        &table,
+        viewer_open,
+        Some(row_id.to_string()),
+        focus_column,
+    ))
 }
 
 #[cfg(test)]

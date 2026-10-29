@@ -31,7 +31,7 @@ The agent learns the tool by running `tv agent help`. A user should be able to t
 | Row patch API | Agent can `get`, modify (e.g. with `jq`), and `push`. Add `patch` if full re-pushes prove slow. |
 | Multi-cell selection | Cursor-only covers "this one". |
 | CSV / other input formats | JSON only. Agents can convert. |
-| ~~Agent moving the human's cursor~~ | **Reversed 2026-10-28.** See "Changes after review" below. |
+| ~~Agent moving the human's cursor~~ | **Reversed 2026-10-28.** See `tv agent goto` under "Agent CLI". |
 | Auto-opening the viewer (tmux splits etc.) | Environment-specific. The agent just tells the human what to run. |
 
 ## Concepts
@@ -94,6 +94,7 @@ Session IDs are 6 lowercase alphanumeric characters (e.g. `k3f9x2`), short enoug
   table.json      # written by agent CLI (atomic: write temp file, rename)
   view.json       # written by viewer (atomic)
   comments.jsonl  # append-only event log, written by both sides
+  goto.json       # written by the agent CLI, deleted by the viewer once applied
 ```
 
 A session's `table.json` never holds comments: they live only in `comments.jsonl`. Opening a file that has `comments` moves them into the new session's log, and `tv save` writes them back out from it.
@@ -135,7 +136,7 @@ One JSON event per line. Appends are small single writes, safe enough for two lo
 
 ### Live updates
 
-The viewer polls the mtimes of `table.json` and `comments.jsonl` every 250ms and reloads on change.
+The viewer polls the mtimes of `table.json` and `comments.jsonl` every 250ms and reloads on change. On the same tick it applies a `goto.json` (see `tv agent goto`), but only in the grid: in a popup, the record view, an input line or the help overlay, the request waits until the human is back.
 
 On table reload:
 - Cursor stays on the same row ID and column name; if either is gone, clamp to the nearest valid position.
@@ -279,6 +280,17 @@ Comment text is one argument, so quote it. It's trimmed, and empty text is rejec
 
 Start a thread on a cell, for when the agent wants to point the human at something. The human finds it with `]`. Prints the new message, whose `id` is the new thread's ID. Rejected, with nothing written, if the table has no such row or column.
 
+### `tv agent goto <id> --row <row-id> [--col <column>]`
+
+Move the human's cursor to a cell. It writes `goto.json` into the session directory, and the viewer applies it on its next tick and deletes the file. The status line says `the agent moved the cursor here`, since a cursor jumping on its own is puzzling.
+
+- Without `--col`, the cursor keeps its column.
+- The viewer applies it only in the grid. In a popup, the record view, an input line or the help overlay, it waits until the human is back, so it never changes what they're reading or typing about.
+- With no viewer open, the next viewer to open applies it on its first tick. The agent can point at a cell before the human opens the table.
+- An unknown row or column is an error, and nothing is written.
+
+Prints the focus the move will give, in `focus`'s shape. Without `--col`, the column is the open viewer's, or the one a new viewer starts on (the key column, else the first).
+
 ### `tv agent sessions`
 
 ```json
@@ -342,7 +354,7 @@ src/
     app.rs         # App state: table, cursor, scroll, mode (Grid/Detail/Record/Command/Comment/ConfirmDelete/Help), highlights, comment threads
     render.rs      # draw functions; pure, take &App
     layout.rs      # column widths, visible column range given pinned column and terminal width
-    sync.rs        # the viewer's file IO: writes view.json and comments, polls table.json and comments.jsonl
+    sync.rs        # the viewer's file IO: writes view.json and comments, polls table.json and comments.jsonl, applies goto.json
     diff.rs        # after a reload: where the cursor goes, which cells changed
 ```
 
@@ -373,7 +385,7 @@ Each milestone is usable on its own.
 
 Decisions made while planning. Work is tracked in the Linear project "table viewer" (P-ADI-8, issues ADI-197 through ADI-233). Per-ticket plans live in `plans/`.
 
-- **Agent can move the cursor.** `tv agent goto <id> --row R [--col C]` writes `goto.json` into the session dir; the viewer applies it on the next poll and deletes the file. Reverses the "Not doing" entry above.
+- **Agent can move the cursor:** `tv agent goto`, under "Agent CLI". Reverses the "Not doing" entry above.
 - **Command line.** `:` opens a vim-style command line in the viewer. `:w [path]` saves, `:help`, `:q`. Single-key bindings from the Keys table remain as shortcuts. The command line is the extension point for future commands.
 - **Session pruning.** No automatic pruning. `tv session prune [--older-than 7d] [--closed] [--dry-run]` is explicit.
 - **Skills.** `tv skills` lists bundled agent skills; `tv skills show <name>` prints one; `tv skills install <name> --to <dir>` writes it out.

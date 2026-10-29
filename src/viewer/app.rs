@@ -500,10 +500,11 @@ impl App {
     pub fn new(table: Table) -> Self {
         let widths = layout::column_widths(&table);
         // Start on the leftmost column on screen, which is the key column if
-        // there is one.
+        // there is one. `tv agent goto` uses the same rule to say where a new
+        // viewer's cursor will be.
         let cursor = Cursor {
             row: 0,
-            col: table.key_column_index().unwrap_or(0),
+            col: table.start_column(),
         };
         App {
             table,
@@ -615,6 +616,37 @@ impl App {
                     .push(index);
             }
         }
+    }
+
+    /// Whether `tv agent goto` may move the cursor now: only in the grid. In
+    /// a popup, the record view, an input line or the help overlay, moving it
+    /// would change what the human is reading or typing about.
+    pub fn ready_for_goto(&self) -> bool {
+        self.mode == Mode::Grid
+    }
+
+    /// Move the cursor where `tv agent goto` asked: row `row_id`, and column
+    /// `column` or the current one. The status line says the agent moved it,
+    /// since a cursor jumping on its own is puzzling. A row or column the
+    /// table doesn't have (a push since the request) moves nothing, and the
+    /// status line says why.
+    pub fn go_to(&mut self, row_id: &str, column: Option<&str>) {
+        let Some(row) = self.table.row_index(row_id) else {
+            self.set_message(format!("goto: no row \"{row_id}\""));
+            return;
+        };
+        let col = match column {
+            None => self.cursor.col,
+            Some(name) => {
+                let Some(col) = self.table.column_index(name) else {
+                    self.set_message(format!("goto: no column \"{name}\""));
+                    return;
+                };
+                col
+            }
+        };
+        self.move_to(row, col);
+        self.set_message("the agent moved the cursor here".to_string());
     }
 
     /// Whether the last reload changed this cell, for the next few seconds.
@@ -2054,5 +2086,63 @@ mod tests {
         comment(&mut app, "hi");
         assert_eq!(app.take_pending().len(), 1);
         assert_eq!(app.take_pending(), []);
+    }
+
+    #[test]
+    fn ready_for_goto_only_in_the_grid() {
+        let mut app = prs_app();
+        assert!(app.ready_for_goto());
+        for mode in [
+            Mode::Help,
+            Mode::Detail,
+            Mode::Record,
+            Mode::Command(CommandLine::default()),
+            Mode::ConfirmDelete(vec!["c1".to_string()]),
+        ] {
+            app.mode = mode;
+            assert!(!app.ready_for_goto(), "{:?}", app.mode);
+        }
+        let mut app = prs_app();
+        press_char(&mut app, 'c');
+        assert!(!app.ready_for_goto(), "{:?}", app.mode);
+    }
+
+    #[test]
+    fn go_to_moves_to_the_cell_and_says_so() {
+        let mut app = prs_app();
+        app.go_to("404", Some("title"));
+        assert_eq!(app.cursor, Cursor { row: 1, col: 1 });
+        assert_eq!(message(&app), Some("the agent moved the cursor here"));
+        app.go_to("409", None);
+        assert_eq!(app.cursor, Cursor { row: 0, col: 1 }, "keeps the column");
+    }
+
+    #[test]
+    fn go_to_a_cell_thats_gone_moves_nothing() {
+        let mut app = prs_app();
+        app.go_to("404", Some("title"));
+        app.go_to("412", Some("title"));
+        assert_eq!(app.cursor, Cursor { row: 1, col: 1 });
+        assert_eq!(message(&app), Some("goto: no row \"412\""));
+        app.go_to("409", Some("nope"));
+        assert_eq!(app.cursor, Cursor { row: 1, col: 1 });
+        assert_eq!(message(&app), Some("goto: no column \"nope\""));
+    }
+
+    #[test]
+    fn go_to_scrolls_the_cell_into_view() {
+        let mut app = grid_app(None);
+        app.go_to("#30", Some("c8"));
+        assert_eq!(app.cursor, Cursor { row: 30, col: 8 });
+        assert!(
+            app.first_row <= 30 && 30 < app.first_row + 10,
+            "{}",
+            app.first_row
+        );
+        let visible = app.visible_columns();
+        assert!(
+            visible.iter().any(|column| column.index == 8),
+            "{visible:?}"
+        );
     }
 }

@@ -819,3 +819,83 @@ fn agent_comments_warns_about_skipped_lines_on_stderr() {
         "comments.jsonl: skipped lines that aren't events: 2\n"
     );
 }
+
+/// The `goto.json` waiting in session directory `dir`, if there is one.
+fn pending_goto(dir: &Path) -> Option<Value> {
+    let text = fs::read_to_string(dir.join("goto.json")).ok()?;
+    Some(serde_json::from_str(&text).unwrap())
+}
+
+#[test]
+fn agent_goto_asks_the_viewer_and_prints_the_focus() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    let focus = agent(
+        home.path(),
+        &["goto", "abc123", "--row", "404", "--col", "title"],
+        "",
+    );
+    assert_eq!(focus["viewer_open"], false);
+    assert_eq!(
+        (focus["row_id"].as_str(), focus["column"].as_str()),
+        (Some("404"), Some("title"))
+    );
+    assert_eq!(focus["value"], "Bump serde to 1.0.229");
+    assert_eq!(focus["row"]["number"], 404);
+    assert_eq!(
+        pending_goto(&dir),
+        Some(serde_json::json!({"row_id": "404", "column": "title"}))
+    );
+}
+
+#[test]
+fn agent_goto_without_col_keeps_the_viewers_column() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    // An open viewer on `author` keeps it.
+    write_view_at(&dir, std::process::id(), "409", "author");
+    let focus = agent(home.path(), &["goto", "abc123", "--row", "404"], "");
+    assert_eq!(
+        (focus["column"].as_str(), focus["value"].as_str()),
+        (Some("author"), Some("dependabot"))
+    );
+    assert_eq!(
+        pending_goto(&dir),
+        Some(serde_json::json!({"row_id": "404"}))
+    );
+
+    // A closed one: the next viewer starts on the key column, whatever
+    // `view.json` last said.
+    write_view_at(&dir, NO_SUCH_PID, "409", "author");
+    let focus = agent(home.path(), &["goto", "abc123", "--row", "404"], "");
+    assert_eq!(focus["viewer_open"], false);
+    assert_eq!(
+        (focus["column"].as_str(), focus["value"].as_u64()),
+        (Some("number"), Some(404))
+    );
+}
+
+#[test]
+fn agent_goto_to_a_missing_cell_writes_nothing() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    let output = agent_output(home.path(), &["goto", "abc123", "--row", "412"], "");
+    assert_fails_with(&output, "no row \"412\"");
+    let output = agent_output(
+        home.path(),
+        &["goto", "abc123", "--row", "404", "--col", "nope"],
+        "",
+    );
+    assert_fails_with(&output, "no column \"nope\"");
+    assert_eq!(pending_goto(&dir), None);
+}
+
+#[test]
+fn rm_removes_a_session_with_a_pending_goto() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    agent(home.path(), &["goto", "abc123", "--row", "404"], "");
+    assert!(pending_goto(&dir).is_some());
+    succeeds(&tv(home.path(), &["rm", "abc123"], ""));
+    assert!(!dir.exists());
+}

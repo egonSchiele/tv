@@ -189,6 +189,12 @@ impl Table {
     pub fn key_column_index(&self) -> Option<usize> {
         self.column_index(self.key.as_deref()?)
     }
+
+    /// The column a new viewer's cursor starts on: the key column, which is
+    /// drawn first, or else the first column.
+    pub fn start_column(&self) -> usize {
+        self.key_column_index().unwrap_or(0)
+    }
 }
 
 impl TryFrom<RawTable> for Table {
@@ -585,6 +591,25 @@ mod tests {
         assert_eq!(table.column_index("number"), Some(0));
         assert_eq!(table.column_index("title"), Some(1));
         assert_eq!(table.column_index("nope"), None);
+    }
+
+    #[test]
+    fn start_column_is_the_key_column_or_the_first() {
+        let keyed_second =
+            r#"{"key": "id", "columns": [{"name": "a"}, {"name": "id"}], "rows": []}"#;
+        assert_eq!(Table::parse(keyed_second).unwrap().start_column(), 1);
+        assert_eq!(
+            Table::from_path("examples/prs.json")
+                .unwrap()
+                .start_column(),
+            0
+        );
+        assert_eq!(
+            Table::parse(r#"[{"a": 1, "b": 2}]"#)
+                .unwrap()
+                .start_column(),
+            0
+        );
     }
 
     #[test]
