@@ -1,5 +1,9 @@
 //! Viewer state. All mutation happens here; render only reads it.
 
+use std::convert::Infallible;
+use std::str::FromStr;
+use std::time::{Duration, Instant};
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::layout::{self, VisibleColumn};
@@ -89,14 +93,113 @@ pub enum Action {
     FirstCol,
     LastCol,
     Help,
+    CommandLine,
     Quit,
 }
 
 /// What the keyboard is driving right now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     Grid,
     Help,
+    Command(CommandLine),
+}
+
+/// The `:` line being typed. `cursor` counts characters, not bytes, so typing
+/// `é` can't split a UTF-8 sequence; it becomes a byte offset only at the edit.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CommandLine {
+    pub text: String,
+    pub cursor: usize,
+}
+
+impl CommandLine {
+    /// The text left of the cursor, for placing the terminal cursor.
+    pub fn before_cursor(&self) -> &str {
+        &self.text[..self.byte_index(self.cursor)]
+    }
+
+    fn byte_index(&self, chars: usize) -> usize {
+        self.text
+            .char_indices()
+            .nth(chars)
+            .map_or(self.text.len(), |(index, _)| index)
+    }
+
+    fn insert(&mut self, character: char) {
+        let index = self.byte_index(self.cursor);
+        self.text.insert(index, character);
+        self.cursor += 1;
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.cursor -= 1;
+        let index = self.byte_index(self.cursor);
+        self.text.remove(index);
+    }
+
+    fn left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    fn right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.text.chars().count());
+    }
+
+    fn end(&mut self) {
+        self.cursor = self.text.chars().count();
+    }
+}
+
+/// A command typed after `:`. Named so it isn't confused with clap's
+/// `Command` in `main.rs`. To add one, add a variant, a `from_str` arm, a
+/// `HELP` row, and a `run_command` arm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColonCommand {
+    Help,
+    Quit,
+    Write(Option<String>),
+    Unknown(String),
+}
+
+impl FromStr for ColonCommand {
+    // Parsing never fails: anything unrecognised is `Unknown`.
+    type Err = Infallible;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let text = text.trim();
+        let (name, argument) = match text.split_once(char::is_whitespace) {
+            Some((name, argument)) => (name, argument.trim()),
+            None => (text, ""),
+        };
+        Ok(match (name, argument) {
+            ("help" | "h", "") => ColonCommand::Help,
+            ("q" | "quit", "") => ColonCommand::Quit,
+            ("w" | "write", "") => ColonCommand::Write(None),
+            ("w" | "write", path) => ColonCommand::Write(Some(path.to_string())),
+            _ => ColonCommand::Unknown(text.to_string()),
+        })
+    }
+}
+
+impl ColonCommand {
+    /// Listed in the help overlay. Kept next to `from_str` so they're edited together.
+    pub const HELP: &'static [(&'static str, &'static str)] = &[
+        (":help", "show this help"),
+        (":q", "quit"),
+        (":w [path]", "save (not implemented yet)"),
+    ];
+}
+
+/// How long a status-line message stays up.
+const MESSAGE_DURATION: Duration = Duration::from_secs(3);
+
+pub struct Message {
+    pub text: String,
+    shown_at: Instant,
 }
 
 /// Every key the grid responds to. `handle_key` looks keys up here; to add a
@@ -153,6 +256,11 @@ pub const GRID_BINDINGS: &[Binding<Action>] = &[
         help: "last column",
     },
     Binding {
+        keys: &[Key::char(':')],
+        action: Action::CommandLine,
+        help: "command line",
+    },
+    Binding {
         keys: &[Key::char('?')],
         action: Action::Help,
         help: "show this help",
@@ -184,6 +292,7 @@ pub struct App {
     viewport: Viewport,   // set only through set_viewport
     pub theme: Theme,
     pub mode: Mode,
+    pub message: Option<Message>,
     pub should_quit: bool,
 }
 
@@ -200,6 +309,7 @@ impl App {
             viewport: Viewport::default(),
             theme: Theme::color(),
             mode: Mode::Grid,
+            message: None,
             should_quit: false,
         }
     }
@@ -236,13 +346,70 @@ impl App {
             self.should_quit = true;
             return;
         }
-        match self.mode {
+        match &mut self.mode {
             Mode::Grid => {
                 if let Some(action) = lookup(GRID_BINDINGS, &key) {
                     self.perform(action);
                 }
             }
             Mode::Help => self.mode = Mode::Grid, // any key closes it
+            Mode::Command(line) => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                match key.code {
+                    KeyCode::Esc => self.mode = Mode::Grid,
+                    KeyCode::Enter => {
+                        let text = line.text.trim().to_string();
+                        self.mode = Mode::Grid;
+                        if !text.is_empty() {
+                            let Ok(command) = text.parse();
+                            self.run_command(command);
+                        }
+                    }
+                    KeyCode::Backspace => line.backspace(),
+                    KeyCode::Left => line.left(),
+                    KeyCode::Right => line.right(),
+                    KeyCode::Home => line.cursor = 0,
+                    KeyCode::End => line.end(),
+                    KeyCode::Char('u') if ctrl => *line = CommandLine::default(),
+                    KeyCode::Char(character) if !ctrl => line.insert(character),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Clear the status-line message once it's `MESSAGE_DURATION` old. Takes
+    /// the time as an argument so tests don't have to sleep.
+    pub fn tick(&mut self, now: Instant) {
+        let expired = self
+            .message
+            .as_ref()
+            .is_some_and(|message| now.duration_since(message.shown_at) >= MESSAGE_DURATION);
+        if expired {
+            self.message = None;
+        }
+    }
+
+    fn set_message(&mut self, text: String) {
+        self.message = Some(Message {
+            text,
+            shown_at: Instant::now(),
+        });
+    }
+
+    fn run_command(&mut self, command: ColonCommand) {
+        match command {
+            ColonCommand::Help => self.mode = Mode::Help,
+            ColonCommand::Quit => self.should_quit = true,
+            // ADI-218 implements saving.
+            ColonCommand::Write(path) => {
+                let target = path.map(|path| format!(" (would write {path})"));
+                self.set_message(format!(
+                    "save isn't implemented yet{}",
+                    target.unwrap_or_default()
+                ));
+            }
+            ColonCommand::Unknown(text) => self.set_message(format!("unknown command: {text}")),
         }
     }
 
@@ -268,6 +435,7 @@ impl App {
             Action::FirstCol => self.move_to(row, 0),
             Action::LastCol => self.move_to(row, usize::MAX),
             Action::Help => self.mode = Mode::Help,
+            Action::CommandLine => self.mode = Mode::Command(CommandLine::default()),
             Action::Quit => self.should_quit = true,
         }
     }
@@ -510,6 +678,145 @@ mod tests {
             assert_ne!(binding.help, "");
             assert_ne!(binding.keys.len(), 0);
         }
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for character in text.chars() {
+            press_char(app, character);
+        }
+    }
+
+    fn message(app: &App) -> Option<&str> {
+        app.message.as_ref().map(|message| message.text.as_str())
+    }
+
+    #[test]
+    fn colon_commands_parse() {
+        let cases = [
+            ("help", ColonCommand::Help),
+            ("h", ColonCommand::Help),
+            (" q ", ColonCommand::Quit),
+            ("quit", ColonCommand::Quit),
+            ("w", ColonCommand::Write(None)),
+            (
+                "w  out file.json ",
+                ColonCommand::Write(Some("out file.json".to_string())),
+            ),
+            (
+                "write a.json",
+                ColonCommand::Write(Some("a.json".to_string())),
+            ),
+            ("q now", ColonCommand::Unknown("q now".to_string())),
+            (
+                "frobnicate",
+                ColonCommand::Unknown("frobnicate".to_string()),
+            ),
+        ];
+        for (text, expected) in cases {
+            let Ok(command) = text.parse::<ColonCommand>();
+            assert_eq!(command, expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn colon_q_quits() {
+        let mut app = grid_app(None);
+        type_text(&mut app, ":q");
+        assert!(!app.should_quit);
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn esc_cancels_the_command_line() {
+        let mut app = grid_app(None);
+        type_text(&mut app, ":qj");
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Grid);
+        assert!(!app.should_quit);
+        assert_eq!(app.cursor, Cursor::default());
+        assert_eq!(message(&app), None);
+    }
+
+    #[test]
+    fn blank_command_just_closes() {
+        let mut app = grid_app(None);
+        type_text(&mut app, ":  ");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Grid);
+        assert_eq!(message(&app), None);
+    }
+
+    #[test]
+    fn colon_help_opens_help() {
+        let mut app = grid_app(None);
+        type_text(&mut app, ":help");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Help);
+    }
+
+    #[test]
+    fn unknown_and_write_commands_show_a_message() {
+        let mut app = grid_app(None);
+        type_text(&mut app, ":frob");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(message(&app), Some("unknown command: frob"));
+        type_text(&mut app, ":w out.json");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            message(&app),
+            Some("save isn't implemented yet (would write out.json)")
+        );
+    }
+
+    #[test]
+    fn messages_clear_after_three_seconds() {
+        let mut app = grid_app(None);
+        type_text(&mut app, ":frob");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let now = Instant::now();
+        app.tick(now + Duration::from_secs(1));
+        assert!(app.message.is_some());
+        app.tick(now + Duration::from_secs(4));
+        assert!(app.message.is_none());
+    }
+
+    #[test]
+    fn command_line_edits_multi_byte_text() {
+        let mut line = CommandLine::default();
+        for character in "é日本".chars() {
+            line.insert(character);
+        }
+        line.left();
+        line.backspace(); // removes 日
+        assert_eq!((line.text.as_str(), line.cursor), ("é本", 1));
+        line.insert('x');
+        assert_eq!(line.text, "éx本");
+        assert_eq!(line.before_cursor(), "éx");
+        line.cursor = 0;
+        line.backspace(); // nothing before the cursor
+        line.end();
+        line.right(); // already at the end
+        assert_eq!((line.text.as_str(), line.cursor), ("éx本", 3));
+    }
+
+    #[test]
+    fn command_line_keys() {
+        let mut app = grid_app(None);
+        type_text(&mut app, ":abc");
+        press(&mut app, KeyCode::Home, KeyModifiers::NONE);
+        press_char(&mut app, 'w');
+        press(&mut app, KeyCode::End, KeyModifiers::NONE);
+        press(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+        assert_eq!(
+            app.mode,
+            Mode::Command(CommandLine {
+                text: "wab".to_string(),
+                cursor: 3
+            })
+        );
+        press(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(app.mode, Mode::Command(CommandLine::default()));
     }
 
     #[test]

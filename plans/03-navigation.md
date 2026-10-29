@@ -169,13 +169,15 @@ pub enum Mode { Grid, Help }   // Part 4 adds Command(CommandLine); Part 5 adds 
 ### Status line
 
 ```
- row 2/38  col 4/9  ·  ? help  q quit                  <message>
+ row 2/38  col 4/9  ·  ? help  : command  q quit
+ row 2/38  col 4/9  ·  unknown command: frob        (while a message is showing)
 ```
 
 - **Left:** `row {cursor.row+1}/{rows}  col {cursor.col+1}/{cols}`, or `no rows` for an empty table.
-- **Middle:** fixed hints.
-- **Right:** a right-aligned transient message. It's stored as `message: Option<Message { text, shown_at: Instant }>` and set with `App::set_message(text)`.
+- **After it:** fixed hints, or the transient message while one is showing. The message takes the place of the hints rather than being right-aligned, so the two can never overlap on a narrow screen.
+- **Message storage:** `message: Option<Message { text, shown_at: Instant }>`, set with `App::set_message(text)`.
 - **Clearing:** the event loop calls `App::tick(Instant::now())` on every iteration. `tick` takes the time as an argument, so tests can pass a time 4s later instead of sleeping. It clears messages older than `MESSAGE_DURATION` (3s).
+- **Which commit:** the message slot and `tick` land in Part 4, with the first thing that sets a message, so Part 3 adds nothing unused.
 
 ### Help overlay
 
@@ -184,8 +186,7 @@ pub enum Mode { Grid, Help }   // Part 4 adds Command(CommandLine); Part 5 adds 
 ### Tests
 
 - `?` opens Help and any key closes it.
-- A message clears after `tick` at +4s and stays at +1s.
-- Snapshots of the status line with a message, and of the help overlay.
+- A snapshot of the help overlay. (The message tests are in Part 4.)
 
 ## Part 4: Command line (ADI-215)
 
@@ -225,6 +226,7 @@ The ticket asks for `FromStr` so that adding a command is one match arm. It's na
 - `:`, `q`, `Enter` quits. `:`, `Esc` goes back to Grid with no side effects.
 - Editing with multi-byte input (`é`, `日本`), including Backspace and ← in the middle.
 - A snapshot of the command line mid-edit, including the cursor position.
+- A message clears after `tick` at +4s and stays at +1s; a snapshot of the status line with a message.
 
 ## Part 5: Cell detail and record view (ADI-216)
 

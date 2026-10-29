@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use serde_json::Value;
 
-use super::app::{App, GRID_BINDINGS, Mode, key_label};
+use super::app::{App, ColonCommand, GRID_BINDINGS, Mode, key_label};
 use super::layout::{self, Align, VisibleColumn};
 use crate::table::{ColumnType, cell_text, single_line};
 
@@ -66,7 +66,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         areas.body,
     );
     frame.render_widget(Line::from(divider(screen.width)), areas.divider);
-    frame.render_widget(status_line(app), areas.status);
+    draw_status(frame, app, areas.status);
 
     if app.mode == Mode::Help {
         draw_help(frame, screen);
@@ -167,8 +167,26 @@ fn divider(width: u16) -> String {
     format!("├{middle}┤")
 }
 
-/// Key hints after the position. The full list is in the help overlay.
-const STATUS_HINTS: &str = "? help  q quit";
+/// Key hints after the position, unless a message is showing. The full list
+/// is in the help overlay.
+const STATUS_HINTS: &str = "? help  : command  q quit";
+
+/// The status line, or the `:` line while a command is being typed.
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    if let Mode::Command(line) = &app.mode {
+        frame.render_widget(Line::from(format!(":{}", line.text)), area);
+        // Put the terminal's cursor where typing goes: after the `:` and the
+        // text before the cursor, measured in cells, not bytes.
+        let offset = 1 + layout::display_width(line.before_cursor());
+        let x = area
+            .x
+            .saturating_add(offset)
+            .min(area.right().saturating_sub(1));
+        frame.set_cursor_position((x, area.y));
+        return;
+    }
+    frame.render_widget(status_line(app), area);
+}
 
 fn status_line(app: &App) -> Line<'static> {
     let table = app.table();
@@ -183,36 +201,46 @@ fn status_line(app: &App) -> Line<'static> {
             table.columns.len()
         )
     };
-    Line::from(format!(" {position}  ·  {STATUS_HINTS}"))
+    let after = app
+        .message
+        .as_ref()
+        .map_or(STATUS_HINTS, |message| message.text.as_str());
+    Line::from(format!(" {position}  ·  {after}"))
 }
 
-/// A centered box listing every grid key, built from `GRID_BINDINGS` so it
-/// always matches what the keys do.
+/// A centered box listing every grid key and `:` command. It's built from
+/// `GRID_BINDINGS` and `ColonCommand::HELP`, so it always matches what works.
 fn draw_help(frame: &mut Frame, screen: Rect) {
-    let rows: Vec<(String, &str)> = GRID_BINDINGS
+    let keys: Vec<(String, &str)> = GRID_BINDINGS
         .iter()
         .map(|binding| {
-            let keys: Vec<String> = binding.keys.iter().copied().map(key_label).collect();
-            (keys.join(" "), binding.help)
+            let labels: Vec<String> = binding.keys.iter().copied().map(key_label).collect();
+            (labels.join(" "), binding.help)
         })
         .collect();
-    let keys_width = rows
+    let commands: Vec<(String, &str)> = ColonCommand::HELP
         .iter()
-        .map(|(keys, _)| layout::display_width(keys))
+        .map(|&(name, help)| (name.to_string(), help))
+        .collect();
+    let label_width = keys
+        .iter()
+        .chain(&commands)
+        .map(|(label, _)| layout::display_width(label))
         .max()
         .unwrap_or(0);
-    let mut lines: Vec<Line> = rows
-        .iter()
-        .map(|(keys, help)| {
-            Line::from(vec![
-                Span::styled(
-                    format!(" {} ", layout::fit(keys, keys_width, Align::Right)),
-                    Style::new().add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!(" {help} ")),
-            ])
-        })
-        .collect();
+    let help_line = |(label, help): &(String, &str)| {
+        Line::from(vec![
+            Span::styled(
+                format!(" {} ", layout::fit(label, label_width, Align::Right)),
+                Style::new().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(" {help} ")),
+        ])
+    };
+
+    let mut lines: Vec<Line> = keys.iter().map(help_line).collect();
+    lines.push(Line::from(""));
+    lines.extend(commands.iter().map(help_line));
     lines.push(Line::from(""));
     lines.push(Line::from(" Press any key to close").dim());
 
@@ -242,6 +270,8 @@ mod tests {
     use super::*;
     use crate::snapshot::{assert_snapshot, buffer_view};
     use crate::table::Table;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
     use crate::viewer::app::Cursor;
     use crate::viewer::sync_viewport;
     use crate::viewer::theme::Theme;
@@ -360,7 +390,36 @@ mod tests {
     fn help_overlay() {
         let mut app = prs();
         app.mode = Mode::Help;
-        assert_snapshot("help", &render_text(&mut app, 60, 20));
+        assert_snapshot("help", &render_text(&mut app, 60, 26));
+    }
+
+    #[test]
+    fn command_line_mid_edit() {
+        let mut app = prs();
+        for code in [':', 'w', ' ', 'o', 'u', 't', '.', 'j', 's', 'o', 'n']
+            .map(KeyCode::Char)
+            .into_iter()
+            .chain([KeyCode::Left, KeyCode::Left])
+        {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        let mut terminal = render(&mut app, 50, 8);
+        assert_snapshot("command_line", &buffer_view(terminal.backend().buffer()));
+        // After `:w out.js`, so at column 1 (border) + 9; on the status row.
+        terminal.backend_mut().assert_cursor_position((10, 6));
+    }
+
+    #[test]
+    fn status_message() {
+        let mut app = prs();
+        for code in [':', 'f', 'r', 'o', 'b']
+            .map(KeyCode::Char)
+            .into_iter()
+            .chain([KeyCode::Enter])
+        {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+        assert_snapshot("status_message", &render_text(&mut app, 70, 8));
     }
 
     #[test]

@@ -6,7 +6,7 @@ mod layout;
 mod render;
 mod theme;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
@@ -32,6 +32,7 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> anyhow::Result<(
     while !app.should_quit {
         let size = terminal.size()?;
         sync_viewport(app, Rect::new(0, 0, size.width, size.height));
+        app.tick(Instant::now());
         terminal.draw(|frame| render::draw(frame, app))?;
         // A resize event needs no handling: the next draw uses the new size.
         if event::poll(TICK)?

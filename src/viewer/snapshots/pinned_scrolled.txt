@@ -3,7 +3,7 @@
 "│ a-fairly-long-identifier  │   10 │ kept │ │"
 "│ b-another-long-identifier │  200 │ also │ │"
 "├───────────────────────────────────────────┤"
-"│ row 1/2  col 1/4  ·  ? help  q quit       │"
+"│ row 1/2  col 1/4  ·  ? help  : command  q │"
 "└───────────────────────────────────────────┘"
 --- styles
 row 1: 1..28 BOLD, 29..35 BOLD, 36..42 BOLD
