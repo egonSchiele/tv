@@ -132,7 +132,16 @@ impl Sessions {
         for entry in entries {
             let entry = entry.with_context(|| format!("reading {}", self.root.display()))?;
             if let Some(session) = self.session_at(entry.path()) {
-                found.push((session.modified_at()?, session));
+                match newest_mtime(&session.dir) {
+                    Ok(time) => found.push((time, session)),
+                    // Removed since `read_dir` listed it (a concurrent
+                    // `tv rm`), so it isn't a session any more.
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error)
+                            .with_context(|| format!("reading {}", session.dir.display()));
+                    }
+                }
             }
         }
         // Newest first. Ties (file clocks are coarse) go by ID, so the order
@@ -286,7 +295,13 @@ fn is_session_file(name: &OsStr) -> bool {
 fn newest_mtime(dir: &Path) -> io::Result<SystemTime> {
     let mut newest = SystemTime::UNIX_EPOCH;
     for entry in fs::read_dir(dir)? {
-        newest = newest.max(entry?.metadata()?.modified()?);
+        match entry?.metadata() {
+            Ok(metadata) => newest = newest.max(metadata.modified()?),
+            // Renamed or deleted since `read_dir` listed it (a `write_atomic`
+            // finishing, or a concurrent `tv rm`). It has nothing to add.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
     }
     Ok(newest)
 }

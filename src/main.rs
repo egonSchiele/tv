@@ -120,21 +120,19 @@ impl Target {
     }
 }
 
-/// Load a table from a file, or from stdin when `source` is `-` (the usual
-/// command-line convention, so it lives here rather than in `table.rs`).
-fn load(source: &str) -> anyhow::Result<Table> {
-    if source == "-" {
-        let text = std::io::read_to_string(std::io::stdin()).context("reading stdin")?;
-        // The viewer reads keys from stdin. Now that the pipe is drained, point
-        // stdin at the terminal: stdout, which must be the terminal for the
-        // viewer to draw at all. crossterm would otherwise fall back to
-        // `/dev/tty`, which its reader can't watch on macOS (kqueue doesn't
-        // support that device), and fail with "Failed to initialize input reader".
-        #[cfg(unix)]
-        rustix::stdio::dup2_stdin(std::io::stdout()).context("attaching stdin to the terminal")?;
-        return Table::parse(&text).context("parsing stdin");
-    }
-    Table::from_path(source)
+/// Read the table on stdin, then hand stdin to the terminal for the viewer.
+/// Reading stdin for `-` is a command-line convention, so this lives here
+/// rather than in `table.rs`; `Target::parse` is what recognizes the `-`.
+fn load_stdin() -> anyhow::Result<Table> {
+    let text = std::io::read_to_string(std::io::stdin()).context("reading stdin")?;
+    // The viewer reads keys from stdin. Now that the pipe is drained, point
+    // stdin at the terminal: stdout, which must be the terminal for the
+    // viewer to draw at all. crossterm would otherwise fall back to
+    // `/dev/tty`, which its reader can't watch on macOS (kqueue doesn't
+    // support that device), and fail with "Failed to initialize input reader".
+    #[cfg(unix)]
+    rustix::stdio::dup2_stdin(std::io::stdout()).context("attaching stdin to the terminal")?;
+    Table::parse(&text).context("parsing stdin")
 }
 
 /// Open the viewer on `target`. A file or stdin becomes a new session first.
@@ -142,8 +140,8 @@ fn open(sessions: &Sessions, target: Target) -> anyhow::Result<()> {
     // Load before creating, so a bad file errors out before the screen
     // changes and leaves no session behind.
     let session = match target {
-        Target::Stdin => sessions.create(&load("-")?)?,
-        Target::File(path) => sessions.create(&load(&path)?)?,
+        Target::Stdin => sessions.create(&load_stdin()?)?,
+        Target::File(path) => sessions.create(&Table::from_path(&path)?)?,
         Target::Session(id) => sessions.open(&id)?,
         Target::MostRecent => sessions
             .most_recent()?
