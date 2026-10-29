@@ -1,5 +1,5 @@
 //! The viewer's half of the session directory: `view.json` out (where the
-//! cursor is), `table.json` in (live reload), and `comments.jsonl` in.
+//! cursor is), `table.json` in (live reload), and `comments.jsonl` both ways.
 //! Everything the event loop does to the filesystem goes through here, with
 //! the time passed in so tests control it. `tick` is a list of steps; a later
 //! poll (`goto.json`) is one more step.
@@ -87,9 +87,21 @@ impl SessionSync {
     /// `view.json` write. Each step is its own method, so one returning early
     /// can't skip the next.
     pub fn tick(&mut self, app: &mut App, now: Instant) {
+        self.write_pending(app);
         self.poll_table(app, now);
         self.poll_comments(app);
         self.write_view_if_moved(app, now);
+    }
+
+    /// Write the comment events from the keyboard since the last tick.
+    /// `poll_comments` then sees the log grow and reads it back, so a new
+    /// comment shows up on the same frame. A failed write loses what was
+    /// typed, and says so; there's nowhere to keep it once the session is
+    /// gone.
+    fn write_pending(&mut self, app: &mut App) {
+        if let Err(error) = self.session.append_events(&app.take_pending()) {
+            app.set_message(format!("not saved: {}", file_error(COMMENTS_FILE, &error)));
+        }
     }
 
     /// Reload `table.json` into `app` if it changed. A failure keeps the
@@ -230,6 +242,7 @@ mod tests {
     use crate::session::Sessions;
     use crate::table::Table;
     use crate::viewer::app::Cursor;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::fs::{self, File};
     use std::path::PathBuf;
 
@@ -619,5 +632,44 @@ mod tests {
         fixture.sync.tick(&mut fixture.app, Instant::now());
         assert_eq!(fixture.app.threads().len(), 1);
         assert_eq!(fixture.message(), None);
+    }
+
+    /// `c`, `hi`, Enter: a comment on the cursor cell (row `a`, column `id`).
+    fn type_comment(app: &mut App) {
+        for code in [
+            KeyCode::Char('c'),
+            KeyCode::Char('h'),
+            KeyCode::Char('i'),
+            KeyCode::Enter,
+        ] {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+    }
+
+    #[test]
+    fn a_typed_comment_is_written_and_read_back_on_one_tick() {
+        let mut fixture = start(table());
+        type_comment(&mut fixture.app);
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        let log = fixture.other_side().read_log().unwrap();
+        assert_eq!(log.events.len(), 1);
+        assert_eq!(fixture.app.threads().len(), 1);
+        assert_eq!(fixture.app.threads()[0].messages[0].text, "hi");
+        assert!(fixture.app.marker(0, 0).is_some());
+    }
+
+    #[test]
+    fn a_comment_on_a_removed_session_says_it_wasnt_saved() {
+        let mut fixture = start(table());
+        let dir = fixture.view_path.parent().unwrap().to_path_buf();
+        fixture.sessions.remove(fixture.other_side()).unwrap();
+        type_comment(&mut fixture.app);
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        let message = fixture.message().unwrap();
+        assert!(
+            message.starts_with("not saved: comments.jsonl: No such file"),
+            "{message}"
+        );
+        assert!(!dir.exists());
     }
 }

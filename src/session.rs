@@ -505,9 +505,16 @@ fn create_root(root: &Path) -> io::Result<()> {
 /// increments one of them on every `RandomState::new()`, so each call hashes
 /// differently. That's what lets `create` just draw again on a collision.
 fn random_id() -> String {
+    random_chars(ID_LEN)
+}
+
+/// `len` characters from `ID_ALPHABET`, for session and comment IDs (see
+/// `random_id` for where the randomness comes from). A `u64` holds about 12
+/// of them (36^12 is just under 2^64); the IDs use 5 and 6.
+pub fn random_chars(len: usize) -> String {
     let mut bits = RandomState::new().build_hasher().finish();
     let base = ID_ALPHABET.len() as u64;
-    (0..ID_LEN)
+    (0..len)
         .map(|_| {
             let digit = usize::try_from(bits % base).expect("a digit is less than the base");
             bits /= base;
@@ -1020,6 +1027,16 @@ mod tests {
                 sessions.root
             );
         }
+    }
+
+    #[test]
+    fn random_chars_come_from_the_alphabet() {
+        let text = random_chars(5);
+        assert_eq!(text.len(), 5);
+        assert!(
+            text.bytes().all(|byte| ID_ALPHABET.contains(&byte)),
+            "{text}"
+        );
     }
 
     #[test]

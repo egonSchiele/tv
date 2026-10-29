@@ -1,5 +1,5 @@
-//! Timestamps as text. `ls` shows them now; comments and `view.json` will
-//! use the same format.
+//! Timestamps as text: `ls` shows them, and `view.json` and comments are
+//! stamped with them.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

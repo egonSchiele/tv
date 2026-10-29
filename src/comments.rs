@@ -8,11 +8,17 @@
 
 use std::collections::{HashMap, HashSet};
 use std::iter;
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::session::random_chars;
 use crate::table::Table;
+use crate::time;
+
+/// Characters after the `c` in a comment ID: `c7h2k1`.
+const COMMENT_ID_LEN: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -34,6 +40,71 @@ pub enum Event {
     },
 }
 
+impl Event {
+    /// A new top-level comment on a cell, stamped now.
+    pub fn comment(
+        id: String,
+        author: Author,
+        row_id: String,
+        column: String,
+        text: String,
+    ) -> Event {
+        Event::Add(Add {
+            id,
+            author,
+            row_id: Some(row_id),
+            column: Some(column),
+            reply_to: None,
+            text,
+            ts: now(),
+        })
+    }
+
+    /// A new reply to `thread` (its top-level comment's ID), stamped now.
+    pub fn reply(id: String, author: Author, thread: String, text: String) -> Event {
+        Event::Add(Add {
+            id,
+            author,
+            row_id: None,
+            column: None,
+            reply_to: Some(thread),
+            text,
+            ts: now(),
+        })
+    }
+
+    /// Delete the comment `id`, stamped now.
+    pub fn delete(id: String) -> Event {
+        Event::Delete { id, ts: now() }
+    }
+
+    /// The ID it adds or deletes.
+    pub fn id(&self) -> &str {
+        match self {
+            Event::Add(add) => &add.id,
+            Event::Delete { id, .. } => id,
+        }
+    }
+}
+
+fn now() -> String {
+    time::rfc3339(SystemTime::now())
+}
+
+/// A new comment ID: `c` and `COMMENT_ID_LEN` characters from the
+/// session-ID alphabet, drawn again if one of `taken` has it. 36^5 is about
+/// 60 million, so a redraw is rare, but a repeated ID would silently drop
+/// the later comment (`threads` keeps the first), so it's checked.
+pub fn new_id<'a>(taken: impl IntoIterator<Item = &'a Event>) -> String {
+    let taken: HashSet<&str> = taken.into_iter().map(Event::id).collect();
+    loop {
+        let id = format!("c{}", random_chars(COMMENT_ID_LEN));
+        if !taken.contains(id.as_str()) {
+            return id;
+        }
+    }
+}
+
 /// A comment. A top-level one names its cell (`row_id` and `column`); a
 /// reply names its thread (`reply_to`, the top-level comment's ID).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,8 +123,8 @@ pub struct Add {
 
 /// A comment on a cell and its replies, as a saved file's `comments` holds
 /// it and `tv agent comments` will print it. `threads` works out `value`,
-/// `awaiting_reply` and `orphaned` against the current table. `import`
-/// ignores them, and a file may leave them out.
+/// `awaiting_reply`, `orphaned` and `cell` against the current table.
+/// `import` ignores them, and a file may leave them out.
 ///
 /// The fields are in the order the spec shows them; serde writes them in
 /// declaration order.
@@ -73,6 +144,12 @@ pub struct Thread {
     #[serde(default)]
     pub orphaned: bool,
     pub messages: Vec<Message>,
+    /// Where the cell is in the table `threads` folded against, as (row,
+    /// column) indices; `None` when orphaned. The viewer draws markers from
+    /// it. Not part of the file format, so compare threads with what's in a
+    /// file as JSON.
+    #[serde(skip)]
+    pub cell: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +280,7 @@ pub fn threads(events: &[Event], table: &Table) -> Vec<Thread> {
                 awaiting_reply,
                 orphaned: cell.is_none(),
                 messages,
+                cell,
             })
         })
         .collect()
@@ -466,7 +544,91 @@ mod tests {
         let folded = fold(&[comment("c4", "user", "5", "title")]);
         let text = serde_json::to_string(&folded).unwrap();
         let read_back: Vec<Thread> = serde_json::from_str(&text).unwrap();
-        assert_eq!(read_back, folded);
+        assert_eq!(read_back[0].value, folded[0].value);
+        assert_eq!(
+            serde_json::to_value(&read_back).unwrap(),
+            serde_json::to_value(&folded).unwrap()
+        );
+    }
+
+    #[test]
+    fn cell_is_where_the_thread_is_or_none() {
+        let folded = fold(&[
+            comment("c1", "user", "412", "size"),
+            comment("c2", "user", "999", "title"),
+            comment("c3", "user", "412", "nope"),
+        ]);
+        let cells: Vec<Option<(usize, usize)>> = folded.iter().map(|thread| thread.cell).collect();
+        // `table()`'s columns are `n`, `title`, `size`.
+        assert_eq!(cells, [Some((1, 2)), None, None]);
+        assert!(
+            folded
+                .iter()
+                .all(|thread| thread.orphaned == thread.cell.is_none())
+        );
+        let text = serde_json::to_string(&folded[0]).unwrap();
+        assert!(!text.contains("cell"), "{text}");
+    }
+
+    #[test]
+    fn new_ids_look_right_and_avoid_taken_ones() {
+        let id = new_id(&[]);
+        assert_eq!(id.len(), 1 + COMMENT_ID_LEN);
+        assert!(id.starts_with('c'));
+        assert!(
+            id[1..]
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()),
+            "{id}"
+        );
+        let log = events(&[SPEC_LOG.lines().next().unwrap()]);
+        let pending = [Event::delete("czzzzz".to_string())];
+        for _ in 0..100 {
+            let id = new_id(log.iter().chain(&pending));
+            assert!(!["c7h2k1", "czzzzz"].contains(&id.as_str()), "{id}");
+        }
+    }
+
+    #[test]
+    fn constructors_fill_in_what_theyre_given() {
+        let Event::Add(add) = Event::comment(
+            "c1".to_string(),
+            Author::User,
+            "412".to_string(),
+            "title".to_string(),
+            "hi".to_string(),
+        ) else {
+            panic!("expected an add");
+        };
+        assert_eq!(
+            (add.id.as_str(), add.author, add.text.as_str()),
+            ("c1", Author::User, "hi")
+        );
+        assert_eq!(
+            (add.row_id.as_deref(), add.column.as_deref()),
+            (Some("412"), Some("title"))
+        );
+        assert_eq!(add.reply_to, None);
+        // `rfc3339` output, like `2026-10-28T19:03:00Z`.
+        assert_eq!(add.ts.len(), 20, "{}", add.ts);
+        assert!(add.ts.ends_with('Z'), "{}", add.ts);
+
+        let reply = Event::reply(
+            "c2".to_string(),
+            Author::Agent,
+            "c1".to_string(),
+            "yo".to_string(),
+        );
+        let Event::Add(add) = &reply else {
+            panic!("expected an add");
+        };
+        assert_eq!(add.reply_to.as_deref(), Some("c1"));
+        assert_eq!((add.row_id.as_deref(), add.column.as_deref()), (None, None));
+
+        let delete = Event::delete("c1".to_string());
+        assert!(matches!(&delete, Event::Delete { id, .. } if id == "c1"));
+        assert_eq!(delete.id(), "c1");
+        assert_eq!(reply.id(), "c2");
     }
 
     #[test]
