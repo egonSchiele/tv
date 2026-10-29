@@ -1,69 +1,70 @@
-"┌ Open pull requests ──────────────────────────────────────┐"
-"│ number │ title                                           │"
-"│    409 ┌ Keys ───────────────────────────────────┐       │"
-"│    404 │ Grid                                    │       │"
-"│    403 │         ↓ j  move down                  │ webh… │"
-"│    402 │         ↑ k  move up                    │       │"
-"│    397 │         → l  move right                 │me in… │"
-"│    393 │         ← h  move left                  │       │"
-"│    392 │ PgDn Ctrl-f  page down                  │tream… │"
-"│    388 │ PgUp Ctrl-b  page up                    │       │"
-"│    385 │           g  first row                  │       │"
-"│    384 │           G  last row                   │and c… │"
-"│    382 │           0  first column               │       │"
-"│    378 │           $  last column                │       │"
-"│    376 │       Enter  cell detail                │       │"
-"│    374 │           r  record view                │vent … │"
-"│    372 │           :  command line               │       │"
-"│    368 │           ?  show this help             │       │"
-"│    364 │    q Ctrl-c  quit                       │ut co… │"
-"│    361 │                                         │       │"
-"│    357 │ Record view                             │       │"
-"│    351 │         ↓ j  next field                 │       │"
-"│    350 │         ↑ k  previous field             │e has… │"
-"│    345 │           n  next row                   │       │"
-"│    344 │           p  previous row               │op     │"
-"│    341 │     Esc r q  back to the grid           │       │"
-"│    337 │                                         │       │"
-"│    333 │ Commands                                │nd ad… │"
-"│    331 │       :help  show this help             │s      │"
-"│    325 │          :q  quit                       │       │"
-"│    322 │   :w [path]  save (not implemented yet) │       │"
-"│    318 │                                         │       │"
-"│    313 │ Press any key to close                  │t run… │"
-"├────────└─────────────────────────────────────────┘───────┤"
-"│ row 1/40  col 1/9  ·  ? help  : command  q quit          │"
-"└──────────────────────────────────────────────────────────┘"
+"┌ Open pull requests ──────────────────────────────────────────────────────────┐"
+"│ nu┌ Keys ────────────────────────────────────────────────────────────────┐   │"
+"│   │ Grid                                                                 │   │"
+"│   │         ↓ j  move down                                               │   │"
+"│   │         ↑ k  move up                                                 │   │"
+"│   │         → l  move right                                              │   │"
+"│   │         ← h  move left                                               │   │"
+"│   │ PgDn Ctrl-f  page down                                               │   │"
+"│   │ PgUp Ctrl-b  page up                                                 │   │"
+"│   │           g  first row                                               │   │"
+"│   │           G  last row                                                │   │"
+"│   │           0  first column                                            │   │"
+"│   │           $  last column                                             │   │"
+"│   │       Enter  cell detail                                             │   │"
+"│   │           r  record view                                             │   │"
+"│   │           s  save (opens :w with the default path)                   │   │"
+"│   │           :  command line                                            │   │"
+"│   │           ?  show this help                                          │   │"
+"│   │    q Ctrl-c  quit                                                    │   │"
+"│   │                                                                      │   │"
+"│   │ Record view                                                          │   │"
+"│   │         ↓ j  next field                                              │   │"
+"│   │         ↑ k  previous field                                          │   │"
+"│   │           n  next row                                                │   │"
+"│   │           p  previous row                                            │   │"
+"│   │     Esc r q  back to the grid                                        │   │"
+"│   │                                                                      │   │"
+"│   │ Commands                                                             │   │"
+"│   │       :help  show this help                                          │   │"
+"│   │          :q  quit                                                    │   │"
+"│   │   :w [path]  save; default ./<title>.json, also after opening a file │   │"
+"│   │  :w! [path]  save, overwriting a file                                │   │"
+"│   │                                                                      │   │"
+"├───│ Press any key to close                                               │───┤"
+"│ ro└──────────────────────────────────────────────────────────────────────┘   │"
+"└──────────────────────────────────────────────────────────────────────────────┘"
 --- styles
-row 1: 1..9 BOLD, 10..59 BOLD
-row 2: 1..9 BOLD | REVERSED, 52..59 fg=Indexed(252) bg=Indexed(236)
-row 3: 1..9 fg=Indexed(252) bg=Indexed(236), 10..15 BOLD
-row 4: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 5: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 6: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 7: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 8: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 9: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 10: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 11: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 12: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 13: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 14: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 15: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 16: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 17: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 18: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 19: 1..9 fg=Indexed(252) bg=Indexed(236)
-row 20: 1..9 fg=Indexed(252) bg=Indexed(236), 10..22 BOLD
-row 21: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 22: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 23: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 24: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 25: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 26: 1..9 fg=Indexed(252) bg=Indexed(236)
-row 27: 1..9 fg=Indexed(252) bg=Indexed(236), 10..19 BOLD
-row 28: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 29: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 30: 1..9 fg=Indexed(252) bg=Indexed(236), 10..23 BOLD
-row 31: 1..9 fg=Indexed(252) bg=Indexed(236)
-row 32: 1..9 fg=Indexed(252) bg=Indexed(236), 10..33 DIM
+row 1: 1..4 BOLD
+row 2: 1..4 BOLD | REVERSED, 5..10 BOLD
+row 3: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 4: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 5: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 6: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 7: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 8: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 9: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 10: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 11: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 12: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 13: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 14: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 15: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 16: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 17: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 18: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 19: 1..4 fg=Indexed(252) bg=Indexed(236)
+row 20: 1..4 fg=Indexed(252) bg=Indexed(236), 5..17 BOLD
+row 21: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 22: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 23: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 24: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 25: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 26: 1..4 fg=Indexed(252) bg=Indexed(236)
+row 27: 1..4 fg=Indexed(252) bg=Indexed(236), 5..14 BOLD
+row 28: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 29: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 30: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 31: 1..4 fg=Indexed(252) bg=Indexed(236), 5..18 BOLD
+row 32: 1..4 fg=Indexed(252) bg=Indexed(236)
+row 33: 5..28 DIM

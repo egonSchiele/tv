@@ -1,6 +1,7 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 
+mod files;
 #[cfg(test)]
 mod snapshot;
 mod table;

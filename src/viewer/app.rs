@@ -1,6 +1,8 @@
 //! Viewer state. All mutation happens here; render only reads it.
 
 use std::convert::Infallible;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
@@ -8,6 +10,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::layout::{self, VisibleColumn};
 use super::theme::Theme;
+use crate::files;
 use crate::table::Table;
 
 /// Indices into `table.rows` and `table.columns`.
@@ -96,6 +99,7 @@ pub enum Action {
     CommandLine,
     Detail,
     Record,
+    Save,
     Quit,
 }
 
@@ -159,6 +163,12 @@ pub struct CommandLine {
 }
 
 impl CommandLine {
+    /// A line with `text` already typed and the cursor at the end.
+    pub fn new(text: String) -> Self {
+        let cursor = text.chars().count();
+        CommandLine { text, cursor }
+    }
+
     /// The text left of the cursor, for placing the terminal cursor.
     pub fn before_cursor(&self) -> &str {
         &self.text[..self.byte_index(self.cursor)]
@@ -206,7 +216,11 @@ impl CommandLine {
 pub enum ColonCommand {
     Help,
     Quit,
-    Write(Option<String>),
+    /// `:w [path]`, or `:w! [path]` to overwrite a file.
+    Write {
+        path: Option<String>,
+        force: bool,
+    },
     Unknown(String),
 }
 
@@ -220,11 +234,19 @@ impl FromStr for ColonCommand {
             Some((name, argument)) => (name, argument.trim()),
             None => (text, ""),
         };
-        Ok(match (name, argument) {
-            ("help" | "h", "") => ColonCommand::Help,
-            ("q" | "quit", "") => ColonCommand::Quit,
-            ("w" | "write", "") => ColonCommand::Write(None),
-            ("w" | "write", path) => ColonCommand::Write(Some(path.to_string())),
+        // A trailing `!` (vim's "force") is split off once here, so each
+        // command stays one arm. Only `w` accepts it for now.
+        let (name, force) = match name.strip_suffix('!') {
+            Some(name) => (name, true),
+            None => (name, false),
+        };
+        Ok(match (name, argument, force) {
+            ("help" | "h", "", false) => ColonCommand::Help,
+            ("q" | "quit", "", false) => ColonCommand::Quit,
+            ("w" | "write", path, force) => ColonCommand::Write {
+                path: (!path.is_empty()).then(|| path.to_string()),
+                force,
+            },
             _ => ColonCommand::Unknown(text.to_string()),
         })
     }
@@ -235,7 +257,11 @@ impl ColonCommand {
     pub const HELP: &'static [(&'static str, &'static str)] = &[
         (":help", "show this help"),
         (":q", "quit"),
-        (":w [path]", "save (not implemented yet)"),
+        (
+            ":w [path]",
+            "save; default ./<title>.json, also after opening a file",
+        ),
+        (":w! [path]", "save, overwriting a file"),
     ];
 }
 
@@ -311,6 +337,11 @@ pub const GRID_BINDINGS: &[Binding<Action>] = &[
         help: "record view",
     },
     Binding {
+        keys: &[Key::char('s')],
+        action: Action::Save,
+        help: "save (opens :w with the default path)",
+    },
+    Binding {
         keys: &[Key::char(':')],
         action: Action::CommandLine,
         help: "command line",
@@ -348,6 +379,10 @@ pub struct App {
     pub theme: Theme,
     pub mode: Mode,
     pub message: Option<Message>,
+    /// The current file in vim's sense: where the last successful save went.
+    /// It starts as `None` even after `tv file.json`, so `:w` and `s` default
+    /// to `./<title-slug>.json` as the spec says. That's deliberate.
+    save_path: Option<PathBuf>,
     pub should_quit: bool,
 }
 
@@ -371,6 +406,7 @@ impl App {
             theme: Theme::color(),
             mode: Mode::Grid,
             message: None,
+            save_path: None,
             should_quit: false,
         }
     }
@@ -513,15 +549,57 @@ impl App {
         match command {
             ColonCommand::Help => self.mode = Mode::Help,
             ColonCommand::Quit => self.should_quit = true,
-            // ADI-218 implements saving.
-            ColonCommand::Write(path) => {
-                let target = path.map(|path| format!(" (would write {path})"));
-                self.set_message(format!(
-                    "save isn't implemented yet{}",
-                    target.unwrap_or_default()
-                ));
-            }
+            ColonCommand::Write { path, force } => self.save(path, force),
             ColonCommand::Unknown(text) => self.set_message(format!("unknown command: {text}")),
+        }
+    }
+
+    /// Where `:w` and `s` save by default: the last save's path, or
+    /// `./<title-slug>.json` (`./table.json` if the title gives no slug).
+    fn default_save_path(&self) -> PathBuf {
+        if let Some(path) = &self.save_path {
+            return path.clone();
+        }
+        let slug = files::slug(self.table.title.as_deref().unwrap_or(""));
+        let name = if slug.is_empty() { "table" } else { &slug };
+        PathBuf::from(format!("./{name}.json"))
+    }
+
+    /// Save the table and say how it went in the status line. Saving over an
+    /// existing file is refused, unless it's the current file or `force` is
+    /// set (vim's rule). The writing itself is `Table::save`.
+    fn save(&mut self, path: Option<String>, force: bool) {
+        let target = match path {
+            Some(path) => files::expand_tilde(&path),
+            None => self.default_save_path(),
+        };
+        if target.exists() && !force && !self.is_save_path(&target) {
+            self.set_message(format!("{} exists; use :w! to overwrite", target.display()));
+            return;
+        }
+        match self.table.save(&target) {
+            Ok(()) => {
+                self.set_message(format!(
+                    "wrote {} rows to {}",
+                    self.table.rows.len(),
+                    target.display()
+                ));
+                self.save_path = Some(target);
+            }
+            Err(error) => self.set_message(format!("save failed: {error:#}")),
+        }
+    }
+
+    /// Whether `target`, which exists, is the current file. Comparing
+    /// canonical paths makes `./a.json` and `a.json` match; `canonicalize`
+    /// fails on a missing path, which is why this only runs for existing ones.
+    fn is_save_path(&self, target: &Path) -> bool {
+        let Some(saved) = &self.save_path else {
+            return false;
+        };
+        match (fs::canonicalize(saved), fs::canonicalize(target)) {
+            (Ok(saved), Ok(target)) => saved == target,
+            _ => false,
         }
     }
 
@@ -554,6 +632,11 @@ impl App {
             Action::CommandLine => self.mode = Mode::Command(CommandLine::default()),
             Action::Detail => self.open_cell_view(Mode::Detail),
             Action::Record => self.open_cell_view(Mode::Record),
+            // The spec's "prompt for a path": the command line, prefilled.
+            Action::Save => {
+                let text = format!("w {}", self.default_save_path().display());
+                self.mode = Mode::Command(CommandLine::new(text));
+            }
             Action::Quit => self.should_quit = true,
         }
     }
@@ -868,6 +951,13 @@ mod tests {
         app.message.as_ref().map(|message| message.text.as_str())
     }
 
+    fn write(path: Option<&str>, force: bool) -> ColonCommand {
+        ColonCommand::Write {
+            path: path.map(str::to_string),
+            force,
+        }
+    }
+
     #[test]
     fn colon_commands_parse() {
         let cases = [
@@ -875,15 +965,13 @@ mod tests {
             ("h", ColonCommand::Help),
             (" q ", ColonCommand::Quit),
             ("quit", ColonCommand::Quit),
-            ("w", ColonCommand::Write(None)),
-            (
-                "w  out file.json ",
-                ColonCommand::Write(Some("out file.json".to_string())),
-            ),
-            (
-                "write a.json",
-                ColonCommand::Write(Some("a.json".to_string())),
-            ),
+            ("w", write(None, false)),
+            ("w  out file.json ", write(Some("out file.json"), false)),
+            ("write a.json", write(Some("a.json"), false)),
+            ("w!", write(None, true)),
+            ("write! ~/a.json", write(Some("~/a.json"), true)),
+            ("q!", ColonCommand::Unknown("q!".to_string())),
+            ("help!", ColonCommand::Unknown("help!".to_string())),
             ("q now", ColonCommand::Unknown("q now".to_string())),
             (
                 "frobnicate",
@@ -934,17 +1022,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_and_write_commands_show_a_message() {
+    fn unknown_commands_show_a_message() {
         let mut app = grid_app(None);
         type_text(&mut app, ":frob");
         press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(message(&app), Some("unknown command: frob"));
-        type_text(&mut app, ":w out.json");
-        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(
-            message(&app),
-            Some("save isn't implemented yet (would write out.json)")
-        );
     }
 
     #[test]
@@ -1064,6 +1146,126 @@ mod tests {
         for binding in RECORD_BINDINGS {
             assert_ne!(binding.help, "");
             assert_ne!(binding.keys.len(), 0);
+        }
+    }
+
+    fn prs_app() -> App {
+        App::new(Table::from_path("examples/prs.json").unwrap())
+    }
+
+    /// Type `:{command}` and press Enter.
+    fn run_colon(app: &mut App, command: &str) {
+        type_text(app, &format!(":{command}"));
+        press(app, KeyCode::Enter, KeyModifiers::NONE);
+    }
+
+    fn command_line_text(app: &App) -> &str {
+        match &app.mode {
+            Mode::Command(line) => &line.text,
+            other => panic!("expected the command line, got {other:?}"),
+        }
+    }
+
+    // Every save test writes inside a temp dir, never the repo.
+
+    #[test]
+    fn colon_w_saves_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        let mut app = prs_app();
+        run_colon(&mut app, &format!("w {}", path.display()));
+        assert_eq!(
+            message(&app),
+            Some(format!("wrote 40 rows to {}", path.display()).as_str())
+        );
+        let saved = Table::from_path(&path).unwrap();
+        assert_eq!(saved.rows, app.table().rows);
+    }
+
+    #[test]
+    fn plain_colon_w_rewrites_the_current_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        let mut app = prs_app();
+        run_colon(&mut app, &format!("w {}", path.display()));
+        fs::write(&path, "stale").unwrap();
+        run_colon(&mut app, "w");
+        assert!(Table::from_path(&path).is_ok());
+    }
+
+    #[test]
+    fn colon_w_refuses_another_existing_file_and_bang_overwrites_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("b.json");
+        fs::write(&path, "keep me").unwrap();
+        let mut app = prs_app();
+
+        run_colon(&mut app, &format!("w {}", path.display()));
+        assert_eq!(
+            message(&app),
+            Some(format!("{} exists; use :w! to overwrite", path.display()).as_str())
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "keep me");
+
+        run_colon(&mut app, &format!("w! {}", path.display()));
+        assert!(Table::from_path(&path).is_ok());
+    }
+
+    #[test]
+    fn the_current_file_matches_however_its_path_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = prs_app();
+        run_colon(
+            &mut app,
+            &format!("w {}", dir.path().join("a.json").display()),
+        );
+        // The same file by another path is still the current file.
+        let other_spelling = dir.path().join(".").join("a.json");
+        run_colon(&mut app, &format!("w {}", other_spelling.display()));
+        assert!(message(&app).unwrap().starts_with("wrote 40 rows"));
+    }
+
+    #[test]
+    fn a_failed_save_says_why_and_keeps_the_viewer_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("a.json");
+        let mut app = prs_app();
+        run_colon(&mut app, &format!("w {}", path.display()));
+        let expected = format!("save failed: writing {}: ", path.display());
+        assert!(
+            message(&app).unwrap().starts_with(&expected),
+            "{:?}",
+            message(&app)
+        );
+        assert!(!app.should_quit);
+        assert_eq!(app.mode, Mode::Grid);
+    }
+
+    #[test]
+    fn s_prefills_the_default_path() {
+        let mut app = prs_app();
+        press_char(&mut app, 's');
+        assert_eq!(command_line_text(&app), "w ./open-pull-requests.json");
+        // Don't press Enter here: the `./` default would write into the repo.
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        run_colon(&mut app, &format!("w {}", path.display()));
+        press_char(&mut app, 's');
+        assert_eq!(command_line_text(&app), format!("w {}", path.display()));
+        // The cursor is at the end, ready for Enter.
+        let Mode::Command(line) = &app.mode else {
+            unreachable!()
+        };
+        assert_eq!(line.cursor, line.text.chars().count());
+    }
+
+    #[test]
+    fn default_save_path_falls_back_to_table() {
+        for json in [r#"[{"a": 1}]"#, r#"{"title": "!!! ???", "rows": []}"#] {
+            let app = App::new(Table::parse(json).unwrap());
+            assert_eq!(app.default_save_path(), PathBuf::from("./table.json"));
         }
     }
 

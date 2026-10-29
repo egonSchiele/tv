@@ -8,6 +8,8 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::files;
+
 pub type Row = Map<String, Value>;
 
 // Every `Table` that exists has been normalized and validated: serde builds a
@@ -91,6 +93,16 @@ impl Table {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         Table::parse(&text).with_context(|| format!("parsing {}", path.display()))
+    }
+
+    /// Write the table, comments included, in the full format. Inferred
+    /// columns and types are written out, so a shorthand file saves as a
+    /// full one.
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        let mut json = serde_json::to_string_pretty(self)?;
+        json.push('\n');
+        files::write_atomic(path, json.as_bytes())
+            .with_context(|| format!("writing {}", path.display()))
     }
 
     pub fn cell(&self, row: usize, column: &str) -> Option<&Value> {
@@ -246,6 +258,49 @@ mod tests {
         assert_eq!(again.rows, table.rows);
         assert_eq!(again.key.as_deref(), Some("number"));
         assert_eq!(again.title.as_deref(), Some("Open pull requests"));
+    }
+
+    /// Save `table` to a temp file and load it back. Returns the saved JSON too.
+    fn save_and_reload(table: &Table) -> (Table, Value) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("saved.json");
+        table.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        (
+            Table::parse(&text).unwrap(),
+            serde_json::from_str(&text).unwrap(),
+        )
+    }
+
+    #[test]
+    fn save_round_trips_the_example() {
+        let table = Table::from_path("examples/prs.json").unwrap();
+        let (reloaded, _) = save_and_reload(&table);
+        assert_eq!(reloaded.title, table.title);
+        assert_eq!(reloaded.key, table.key);
+        assert_eq!(reloaded.columns, table.columns);
+        assert_eq!(reloaded.rows, table.rows);
+    }
+
+    #[test]
+    fn shorthand_saves_in_the_full_format() {
+        let table = Table::parse(r#"[{"n": 1, "s": "a"}, {"n": 2, "s": null}]"#).unwrap();
+        let (reloaded, json) = save_and_reload(&table);
+        assert_eq!(reloaded.columns, table.columns);
+        assert_eq!(reloaded.rows, table.rows);
+        let columns = json["columns"].as_array().unwrap();
+        assert_eq!(columns.len(), 2);
+        assert!(columns.iter().all(|column| column["type"].is_string()));
+    }
+
+    #[test]
+    fn save_keeps_comments() {
+        let table =
+            Table::parse(r#"{"rows": [{"a": 1}], "comments": [{"id": "c1", "text": "hi"}]}"#)
+                .unwrap();
+        let (reloaded, _) = save_and_reload(&table);
+        assert_eq!(reloaded.comments, table.comments);
+        assert_eq!(reloaded.comments.len(), 1);
     }
 
     #[test]
