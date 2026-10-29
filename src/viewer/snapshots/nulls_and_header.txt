@@ -7,5 +7,5 @@
 "└──────────────────┘"
 --- styles
 row 1: 1..4 BOLD, 5..8 BOLD
-row 2: 5..8 bg=Indexed(236) DIM
-row 3: 1..5 bg=Indexed(236), 5..8 BOLD | REVERSED, 8..9 bg=Indexed(236)
+row 2: 5..8 fg=Indexed(252) bg=Indexed(236) DIM
+row 3: 1..5 fg=Indexed(252) bg=Indexed(236), 5..8 BOLD | REVERSED, 8..9 fg=Indexed(252) bg=Indexed(236)

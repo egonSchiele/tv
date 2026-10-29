@@ -209,7 +209,8 @@ const RECORD_HINTS: &str = "j/k field  n/p row  Esc back";
 fn status_line(app: &App) -> Line<'static> {
     let table = app.table();
     let (rows, cols) = (table.rows.len(), table.columns.len());
-    let (row, col) = (app.cursor.row + 1, app.cursor.col + 1);
+    // Positions count from 1 and go by screen order, as the user sees them.
+    let (row, col) = (app.cursor.row + 1, app.cursor_position() + 1);
     let (position, hints) = if rows == 0 {
         ("no rows".to_string(), STATUS_HINTS)
     } else if app.mode == Mode::Record {
@@ -303,7 +304,14 @@ fn draw_detail(frame: &mut Frame, app: &App, screen: Rect) {
         }
         Some(other) => Text::raw(other.to_string()),
     };
-    let title = format!(" {} · row {} ", column.display_name(), table.row_id(row));
+    // Name the row the way the grid shows it: by its key value, or by the same
+    // 1-based number the status line uses. (Unkeyed row IDs like `#0` are
+    // for agents, and would read as an off-by-one next to `row 1/1`.)
+    let row_name = match &table.key {
+        Some(key) => format!("{} {}", single_line(key), table.row_id(row)),
+        None => format!("row {}", row + 1),
+    };
+    let title = format!(" {} · {row_name} ", column.display_name());
 
     let popup = screen.centered(Constraint::Percentage(80), Constraint::Percentage(60));
     let block = Block::bordered().title(title);
@@ -347,14 +355,17 @@ fn draw_record(frame: &mut Frame, app: &App, area: Rect) {
     // Scroll so the current field is on screen; it sits on the last line once
     // there are more fields than lines.
     let height = usize::from(area.height);
-    let first = cursor.col.saturating_sub(height.saturating_sub(1));
-    let lines: Vec<Line> = table
-        .columns
-        .iter()
-        .enumerate()
+    let first = app
+        .cursor_position()
+        .saturating_sub(height.saturating_sub(1));
+    // Fields in screen order, so they match the grid's columns.
+    let lines: Vec<Line> = app
+        .column_order()
+        .into_iter()
         .skip(first)
         .take(height)
-        .map(|(col, column)| {
+        .map(|col| {
+            let column = &table.columns[col];
             let value = table.cell(cursor.row, &column.name);
             let current = col == cursor.col;
             let line_style = if current {
@@ -581,6 +592,13 @@ mod tests {
         app.cursor = Cursor { row: 7, col: 5 };
         app.mode = Mode::Record;
         assert_snapshot("record_view", &render_text(&mut app, 60, 14));
+    }
+
+    #[test]
+    fn record_view_with_the_key_in_the_middle() {
+        let mut app = app(r#"{"key": "id", "rows": [{"name": "a", "id": 1, "size": 2}]}"#);
+        app.mode = Mode::Record;
+        assert_snapshot("record_view_key_in_middle", &render_text(&mut app, 30, 8));
     }
 
     #[test]

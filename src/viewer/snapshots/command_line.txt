@@ -8,6 +8,6 @@
 "└────────────────────────────────────────────────┘"
 --- styles
 row 1: 1..9 BOLD, 10..49 BOLD
-row 2: 1..9 BOLD | REVERSED, 9..49 bg=Indexed(236)
-row 3: 1..9 bg=Indexed(236)
-row 4: 1..9 bg=Indexed(236)
+row 2: 1..9 BOLD | REVERSED, 9..49 fg=Indexed(252) bg=Indexed(236)
+row 3: 1..9 fg=Indexed(252) bg=Indexed(236)
+row 4: 1..9 fg=Indexed(252) bg=Indexed(236)

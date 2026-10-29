@@ -1,0 +1,12 @@
+"┌────────────────────────────┐"
+"│   id │ 1                   │"
+"│ name │ a                   │"
+"│ size │ 2                   │"
+"│                            │"
+"├────────────────────────────┤"
+"│ row 1/1  field 1/3  ·  j/k │"
+"└────────────────────────────┘"
+--- styles
+row 1: 1..7 fg=Indexed(252) bg=Indexed(236) BOLD, 7..8 fg=Indexed(252) bg=Indexed(236), 8..29 BOLD | REVERSED
+row 2: 1..7 BOLD
+row 3: 1..7 BOLD

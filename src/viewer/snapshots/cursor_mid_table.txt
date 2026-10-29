@@ -12,10 +12,10 @@
 "└────────────────────────────────────────────────────────────────────┘"
 --- styles
 row 1: 1..9 BOLD, 10..22 BOLD, 23..30 BOLD, 31..42 BOLD, 43..54 BOLD
-row 2: 10..22 bg=Indexed(236)
-row 3: 10..22 bg=Indexed(236)
-row 4: 10..22 bg=Indexed(236)
-row 5: 1..10 bg=Indexed(236), 10..22 BOLD | REVERSED, 22..55 bg=Indexed(236)
-row 6: 10..22 bg=Indexed(236)
-row 7: 10..22 bg=Indexed(236)
-row 8: 10..22 bg=Indexed(236)
+row 2: 10..22 fg=Indexed(252) bg=Indexed(236)
+row 3: 10..22 fg=Indexed(252) bg=Indexed(236)
+row 4: 10..22 fg=Indexed(252) bg=Indexed(236)
+row 5: 1..10 fg=Indexed(252) bg=Indexed(236), 10..22 BOLD | REVERSED, 22..55 fg=Indexed(252) bg=Indexed(236)
+row 6: 10..22 fg=Indexed(252) bg=Indexed(236)
+row 7: 10..22 fg=Indexed(252) bg=Indexed(236)
+row 8: 10..22 fg=Indexed(252) bg=Indexed(236)

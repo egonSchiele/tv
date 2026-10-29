@@ -1,6 +1,6 @@
 "┌────────────────────────────────────────────────┐"
 "│ meta                                  │ gone │ │"
-"│ {"l┌ gone · row #0 ───────────────────────┐  │ │"
+"│ {"l┌ gone · row 1 ────────────────────────┐  │ │"
 "│    │null                                  │    │"
 "│    │                                      │    │"
 "│    │                                      │    │"
@@ -12,7 +12,7 @@
 "└────────────────────────────────────────────────┘"
 --- styles
 row 1: 1..40 BOLD, 41..47 BOLD
-row 2: 1..5 bg=Indexed(236), 45..47 BOLD | DIM | REVERSED, 47..48 bg=Indexed(236)
+row 2: 1..5 fg=Indexed(252) bg=Indexed(236), 45..47 BOLD | DIM | REVERSED, 47..48 fg=Indexed(252) bg=Indexed(236)
 row 3: 6..10 DIM
 row 7: 6..14 BOLD
 row 8: 6..14 DIM

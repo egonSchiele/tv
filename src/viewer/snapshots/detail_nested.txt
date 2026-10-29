@@ -2,7 +2,7 @@
 "│ meta                                  │ gone │ │"
 "│ {"labels":["bug","ci"],"draft":false} │      │ │"
 "│                                                │"
-"│    ┌ meta · row #0 ───────────────────────┐    │"
+"│    ┌ meta · row 1 ────────────────────────┐    │"
 "│    │{                                     │    │"
 "│    │  "labels": [                         │    │"
 "│    │    "bug",                            │    │"
@@ -20,6 +20,6 @@
 "└────────────────────────────────────────────────┘"
 --- styles
 row 1: 1..40 BOLD, 41..47 BOLD
-row 2: 1..40 BOLD | REVERSED, 40..41 bg=Indexed(236), 41..47 bg=Indexed(236) DIM, 47..48 bg=Indexed(236)
+row 2: 1..40 BOLD | REVERSED, 40..41 fg=Indexed(252) bg=Indexed(236), 41..47 fg=Indexed(252) bg=Indexed(236) DIM, 47..48 fg=Indexed(252) bg=Indexed(236)
 row 13: 6..14 BOLD
 row 14: 6..14 DIM

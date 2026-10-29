@@ -354,11 +354,17 @@ pub struct App {
 impl App {
     pub fn new(table: Table) -> Self {
         let widths = layout::column_widths(&table);
+        // Start on the leftmost column on screen, which is the key column if
+        // there is one.
+        let cursor = Cursor {
+            row: 0,
+            col: table.key_column_index().unwrap_or(0),
+        };
         App {
             table,
             widths,
             session_id: None,
-            cursor: Cursor::default(),
+            cursor,
             first_row: 0,
             first_col: 0,
             viewport: Viewport::default(),
@@ -389,6 +395,19 @@ impl App {
             self.first_col,
             self.viewport.width,
         )
+    }
+
+    /// Column indices in screen order: the pinned key column, then the rest.
+    pub fn column_order(&self) -> Vec<usize> {
+        layout::screen_order(self.table.columns.len(), self.table.key_column_index())
+    }
+
+    /// Where the cursor's column is on screen, counting from 0 at the left.
+    pub fn cursor_position(&self) -> usize {
+        self.column_order()
+            .iter()
+            .position(|&col| col == self.cursor.col)
+            .unwrap_or(0)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -447,9 +466,13 @@ impl App {
     /// cursor when the record view closes.
     fn perform_in_record(&mut self, action: RecordAction) {
         let Cursor { row, col } = self.cursor;
+        let position = self.cursor_position();
         match action {
-            RecordAction::NextField => self.move_to(row, col + 1),
-            RecordAction::PreviousField => self.move_to(row, col.saturating_sub(1)),
+            // Fields go in screen order, so they match the grid's columns.
+            RecordAction::NextField => self.move_to_position(row, position + 1),
+            RecordAction::PreviousField => {
+                self.move_to_position(row, position.saturating_sub(1));
+            }
             RecordAction::NextRow => self.move_to(row + 1, col),
             RecordAction::PreviousRow => self.move_to(row.saturating_sub(1), col),
             RecordAction::Back => self.mode = Mode::Grid,
@@ -504,15 +527,19 @@ impl App {
 
     fn perform(&mut self, action: Action) {
         let Cursor { row, col } = self.cursor;
+        let position = self.cursor_position();
         let page = self.page_size();
         match action {
             Action::Down => self.move_to(row + 1, col),
             Action::Up => self.move_to(row.saturating_sub(1), col),
-            Action::Right => self.move_to(row, col + 1),
-            Action::Left => self.move_to(row, col.saturating_sub(1)),
+            // Left and right go by screen position, since the pinned key
+            // column is drawn first whatever its index in the table.
+            Action::Right => self.move_to_position(row, position + 1),
+            Action::Left => self.move_to_position(row, position.saturating_sub(1)),
             // Like vim's Ctrl-f and Ctrl-b, the view moves by a whole page too.
+            // `scroll_into_view` clamps it at the end.
             Action::PageDown => {
-                self.first_row = (self.first_row + page).min(self.max_first_row());
+                self.first_row += page;
                 self.move_to(row + page, col);
             }
             Action::PageUp => {
@@ -521,8 +548,8 @@ impl App {
             }
             Action::FirstRow => self.move_to(0, col),
             Action::LastRow => self.move_to(usize::MAX, col),
-            Action::FirstCol => self.move_to(row, 0),
-            Action::LastCol => self.move_to(row, usize::MAX),
+            Action::FirstCol => self.move_to_position(row, 0),
+            Action::LastCol => self.move_to_position(row, usize::MAX),
             Action::Help => self.mode = Mode::Help,
             Action::CommandLine => self.mode = Mode::Command(CommandLine::default()),
             Action::Detail => self.open_cell_view(Mode::Detail),
@@ -540,6 +567,15 @@ impl App {
         self.scroll_into_view();
     }
 
+    /// Like `move_to`, but `position` counts columns on screen from the left
+    /// (clamped), not table indices.
+    fn move_to_position(&mut self, row: usize, position: usize) {
+        let order = self.column_order();
+        let last = order.len().saturating_sub(1);
+        let col = order.get(position.min(last)).copied().unwrap_or(0);
+        self.move_to(row, col);
+    }
+
     fn scroll_into_view(&mut self) {
         let height = self.page_size();
         let Cursor { row, col } = self.cursor;
@@ -548,6 +584,9 @@ impl App {
         } else if row >= self.first_row + height {
             self.first_row = row + 1 - height;
         }
+        // Don't leave empty space below the last row, e.g. after the
+        // terminal gets taller.
+        self.first_row = self.first_row.min(self.max_first_row());
 
         if Some(col) == self.table.key_column_index() {
             return; // the pinned column is always on screen
@@ -724,6 +763,54 @@ mod tests {
         assert_eq!(app.cursor.col, 0);
         assert_eq!(app.first_col, first_col);
         assert!(on_screen(&app, 0));
+    }
+
+    /// The key is the middle column, so it's drawn first: `id | name | size`.
+    fn key_in_the_middle() -> App {
+        let json = r#"{"key": "id", "rows": [{"name": "a", "id": 1, "size": 2}]}"#;
+        let mut app = App::new(Table::parse(json).unwrap());
+        app.set_viewport(60, 10);
+        app
+    }
+
+    #[test]
+    fn columns_move_in_screen_order_when_the_key_is_not_first() {
+        let mut app = key_in_the_middle();
+        assert_eq!((app.cursor.col, app.cursor_position()), (1, 0)); // starts on `id`
+        press_char(&mut app, 'h');
+        assert_eq!(app.cursor.col, 1);
+        press_char(&mut app, 'l');
+        assert_eq!(app.cursor.col, 0); // `name`, to the right of `id`
+        press_char(&mut app, 'l');
+        assert_eq!(app.cursor.col, 2); // `size`
+        press_char(&mut app, 'l');
+        assert_eq!(app.cursor.col, 2);
+        press_char(&mut app, '0');
+        assert_eq!(app.cursor.col, 1);
+        press_char(&mut app, '$');
+        assert_eq!((app.cursor.col, app.cursor_position()), (2, 2));
+    }
+
+    #[test]
+    fn record_fields_go_in_screen_order() {
+        let mut app = key_in_the_middle();
+        press_char(&mut app, 'r');
+        press_char(&mut app, 'j');
+        assert_eq!(app.cursor.col, 0);
+        press_char(&mut app, 'j');
+        assert_eq!(app.cursor.col, 2);
+        press_char(&mut app, 'k');
+        press_char(&mut app, 'k');
+        assert_eq!(app.cursor.col, 1);
+    }
+
+    #[test]
+    fn growing_the_viewport_fills_it() {
+        let mut app = grid_app(None);
+        press_char(&mut app, 'G');
+        assert_eq!(app.first_row, 40);
+        app.set_viewport(60, 20);
+        assert_eq!(app.first_row, 30);
     }
 
     #[test]

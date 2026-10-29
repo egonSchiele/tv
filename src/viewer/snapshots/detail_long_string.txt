@@ -1,7 +1,7 @@
 "┌────────────────────────────────────────────────┐"
 "│ id │ note                                      │"
 "│  7 │ First line of a long note that keeps go…  │"
-"│    ┌ note · row 7 ────────────────────────┐    │"
+"│    ┌ note · id 7 ─────────────────────────┐    │"
 "│    │First line of a long note that keeps  │    │"
 "│    │going well past the width of the popup│    │"
 "│    │so it has to wrap.                    │    │"
@@ -16,6 +16,6 @@
 "└────────────────────────────────────────────────┘"
 --- styles
 row 1: 1..5 BOLD, 6..48 BOLD
-row 2: 1..6 bg=Indexed(236), 6..48 BOLD | REVERSED
+row 2: 1..6 fg=Indexed(252) bg=Indexed(236), 6..48 BOLD | REVERSED
 row 10: 6..14 BOLD
 row 11: 6..14 DIM

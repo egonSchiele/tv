@@ -15,8 +15,11 @@ impl Theme {
         Theme {
             header: Style::new().add_modifier(Modifier::BOLD),
             cursor_cell: Style::new().add_modifier(Modifier::REVERSED | Modifier::BOLD),
-            // 256-color palette entry 236: a dark gray just lighter than a black background.
-            cursor_line: Style::new().bg(Color::Indexed(236)),
+            // 256-color palette entries: 236 is a dark gray just lighter than a
+            // black background, 252 a light gray. Setting the foreground too
+            // keeps the row readable on light terminal themes, whose default
+            // text is near-black.
+            cursor_line: Style::new().bg(Color::Indexed(236)).fg(Color::Indexed(252)),
             null: Style::new().add_modifier(Modifier::DIM),
         }
     }

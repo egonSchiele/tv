@@ -18,7 +18,7 @@ row 2: 1..13 BOLD
 row 3: 1..13 BOLD
 row 4: 1..13 BOLD
 row 5: 1..13 BOLD
-row 6: 1..13 bg=Indexed(236) BOLD, 13..14 bg=Indexed(236), 14..59 BOLD | DIM | REVERSED
+row 6: 1..13 fg=Indexed(252) bg=Indexed(236) BOLD, 13..14 fg=Indexed(252) bg=Indexed(236), 14..59 BOLD | DIM | REVERSED
 row 7: 1..13 BOLD
 row 8: 1..13 BOLD
 row 9: 1..13 BOLD

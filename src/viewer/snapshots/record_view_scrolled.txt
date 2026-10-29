@@ -12,4 +12,4 @@ row 1: 1..13 BOLD
 row 2: 1..13 BOLD
 row 3: 1..13 BOLD
 row 4: 1..13 BOLD
-row 5: 1..13 bg=Indexed(236) BOLD, 13..14 bg=Indexed(236), 14..59 BOLD | REVERSED
+row 5: 1..13 fg=Indexed(252) bg=Indexed(236) BOLD, 13..14 fg=Indexed(252) bg=Indexed(236), 14..59 BOLD | REVERSED
