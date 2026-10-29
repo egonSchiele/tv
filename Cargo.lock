@@ -863,6 +863,7 @@ dependencies = [
  "anyhow",
  "clap",
  "ratatui",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",
