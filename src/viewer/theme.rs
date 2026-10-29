@@ -8,6 +8,8 @@ pub struct Theme {
     /// The cursor's row and column. They're one highlight tier, so one style.
     pub cursor_line: Style,
     pub null: Style,
+    /// Cells the last reload changed, for a few seconds.
+    pub changed: Style,
 }
 
 impl Theme {
@@ -21,16 +23,21 @@ impl Theme {
             // text is near-black.
             cursor_line: Style::new().bg(Color::Indexed(236)).fg(Color::Indexed(252)),
             null: Style::new().add_modifier(Modifier::DIM),
+            // 58 is a dark olive, distinct from the cursor line's gray; 230 a
+            // pale yellow that reads on it.
+            changed: Style::new().bg(Color::Indexed(58)).fg(Color::Indexed(230)),
         }
     }
 
-    /// No colors: reverse video for the cursor, bold for its row and column.
+    /// No colors: reverse video for the cursor, bold for its row and column,
+    /// underlined for changed cells.
     pub fn mono() -> Self {
         Theme {
             header: Style::new().add_modifier(Modifier::BOLD),
             cursor_cell: Style::new().add_modifier(Modifier::REVERSED),
             cursor_line: Style::new().add_modifier(Modifier::BOLD),
             null: Style::new().add_modifier(Modifier::DIM),
+            changed: Style::new().add_modifier(Modifier::UNDERLINED),
         }
     }
 

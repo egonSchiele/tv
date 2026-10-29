@@ -109,7 +109,7 @@ Written by the viewer when the cursor moves (debounced ~100ms) and on start/exit
 }
 ```
 
-A viewer is considered open if `pid` is alive. If two viewers have the same session open, the last write wins. This case isn't handled further.
+A viewer is considered open if `pid` is alive. The exit write leaves `pid` out (and keeps the final position), so only a crashed viewer leaves a pid behind that the system could later reuse. If two viewers have the same session open, the last write wins. This case isn't handled further.
 
 ### `comments.jsonl`
 
@@ -143,9 +143,9 @@ On table reload:
 | `tv open` | Open the most recently modified session. |
 | `tv open <id>` | Open a session. |
 | `tv open <file.json>` | Create a new session from the file (including comments) and open it. |
-| `tv ls` | List sessions: id, title, rows × cols, open comment count, last modified. |
+| `tv ls` | List sessions: id, title, rows × cols, whether a viewer is open, open comment count, last modified. |
 | `tv save <id> <file.json>` | Write table + comments to a file. |
-| `tv rm <id>…` | Delete sessions. |
+| `tv rm <id>… [--force]` | Delete sessions. Refuses a session whose viewer is open, unless `--force`. |
 
 An argument to `tv open` is treated as a file if it contains `.` or `/`, and as a session ID otherwise.
 
@@ -316,8 +316,8 @@ src/
   main.rs          # clap definitions, dispatch
   table.rs         # Table/Column/Value types, parsing, shorthand, inference, validation, row IDs
   files.rs         # atomic writes, ~ expansion, slugs (shared by :w and sessions)
-  session.rs       # paths, ID generation, listing, most-recent lookup, safe removal
-  time.rs          # RFC 3339 timestamps (ls now; comments and view.json later)
+  session.rs       # paths, ID generation, listing, most-recent lookup, safe removal, view.json and viewer-open check
+  time.rs          # RFC 3339 timestamps (ls and view.json now; comments later)
   comments.rs      # event log append/read, folding events into threads
   agent.rs         # tv agent subcommands
   agent_help.txt   # guide text, include_str!'d
@@ -326,6 +326,8 @@ src/
     app.rs         # App state: table, cursor, scroll, mode (Grid/Detail/Record/Input/Help), highlights
     render.rs      # draw functions; pure, take &App
     layout.rs      # column widths, visible column range given pinned column and terminal width
+    sync.rs        # the viewer's file IO: writes view.json, polls table.json
+    diff.rs        # after a reload: where the cursor goes, which cells changed
 ```
 
 Keep `render` pure (state in, frame out) and keep all mutation in `app.rs`. This is the standard ratatui pattern and avoids borrow-checker trouble.

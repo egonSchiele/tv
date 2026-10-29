@@ -49,6 +49,25 @@ fn write_session(home: &Path, id: &str, table: &str) -> PathBuf {
     dir
 }
 
+/// Fits an `i32`, but no system hands it out (Linux caps pids at 4,194,304
+/// and macOS at 99,998), so `kill` says `ESRCH`.
+const NO_SUCH_PID: u32 = 2_147_483_647;
+
+/// Write `view.json` into session directory `dir` the way a viewer with
+/// process `pid` would, every field included so it parses.
+fn write_view(dir: &Path, pid: u32) {
+    let view = format!(
+        r#"{{"pid": {pid}, "row_id": "412", "column": "title", "updated_at": "2026-10-28T19:02:11Z"}}"#
+    );
+    fs::write(dir.join("view.json"), view).unwrap();
+}
+
+/// This test's process: alive for as long as the test runs, so a `view.json`
+/// naming it is an open viewer.
+fn open_viewer(dir: &Path) {
+    write_view(dir, std::process::id());
+}
+
 fn example() -> String {
     fs::read_to_string("examples/prs.json").unwrap()
 }
@@ -164,7 +183,10 @@ fn prune_by_age() {
 #[test]
 fn prune_needs_a_filter() {
     let home = tempfile::tempdir().unwrap();
-    assert_fails_with(&tv(home.path(), &["session", "prune"], ""), "give a filter");
+    assert_fails_with(
+        &tv(home.path(), &["session", "prune"], ""),
+        "give a filter: --older-than <duration> and/or --closed",
+    );
 }
 
 #[test]
@@ -212,4 +234,71 @@ fn rm_refuses_a_directory_with_a_file_it_doesnt_know() {
     assert!(dir.join("notes.txt").exists());
     assert!(dir.join("table.json").exists());
     assert!(succeeds(&tv(home.path(), &["ls"], "")).contains("abc123"));
+}
+
+#[test]
+fn ls_shows_which_viewers_are_open() {
+    let home = tempfile::tempdir().unwrap();
+    open_viewer(&write_session(home.path(), "open00", &example()));
+    write_view(
+        &write_session(home.path(), "dead00", &example()),
+        NO_SUCH_PID,
+    );
+    write_session(home.path(), "none00", &example());
+    let listing = succeeds(&tv(home.path(), &["ls"], ""));
+    let viewer = |id: &str| {
+        let line = listing.lines().find(|line| line.starts_with(id)).unwrap();
+        line.split_whitespace().nth(2).unwrap().to_string()
+    };
+    assert!(
+        listing.starts_with("ID      ROWS×COLS  VIEWER  MODIFIED"),
+        "{listing}"
+    );
+    assert_eq!(viewer("open00"), "open", "{listing}");
+    assert_eq!(viewer("dead00"), "-", "{listing}");
+    assert_eq!(viewer("none00"), "-", "{listing}");
+}
+
+#[test]
+fn rm_refuses_an_open_session_without_force() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = write_session(home.path(), "abc123", &example());
+    open_viewer(&dir);
+    assert_fails_with(
+        &tv(home.path(), &["rm", "abc123"], ""),
+        "session abc123 has a viewer open; close it or use --force",
+    );
+    assert!(dir.join("table.json").exists());
+
+    let output = succeeds(&tv(home.path(), &["rm", "--force", "abc123"], ""));
+    assert_eq!(output, "removed abc123\n");
+    assert!(!dir.exists());
+}
+
+#[test]
+fn prune_never_removes_an_open_session() {
+    let home = tempfile::tempdir().unwrap();
+    let open = write_session(home.path(), "open00", &example());
+    open_viewer(&open);
+    let closed = write_session(home.path(), "shut00", &example());
+    write_view(&closed, NO_SUCH_PID);
+    let prune = |args: &[&str]| tv(home.path(), &[&["session", "prune"], args].concat(), "");
+
+    let output = succeeds(&prune(&["--closed", "--dry-run"]));
+    assert_eq!(output, "would remove shut00  Open pull requests\n");
+
+    let output = succeeds(&prune(&["--older-than", "0d"]));
+    assert!(output.contains("skipped open00  (viewer open)"), "{output}");
+    assert!(
+        output.contains("removed shut00  Open pull requests"),
+        "{output}"
+    );
+    assert!(open.join("table.json").exists());
+    assert!(!closed.exists());
+
+    // Only the open one is left: skipped, and nothing pruned.
+    let output = succeeds(&prune(&["--older-than", "0d"]));
+    assert_eq!(output, "skipped open00  (viewer open)\nnothing to prune\n");
+    // `--closed` doesn't match it at all, so there's no skipped line.
+    assert_eq!(succeeds(&prune(&["--closed"])), "nothing to prune\n");
 }

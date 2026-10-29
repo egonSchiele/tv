@@ -1,0 +1,9 @@
+"┌ Open pull requests ──────────────────────────────────────────────────────────┐"
+"│ number │ title                                              │ author     │   │"
+"│    409 │ Fix login redirect                                 │ jordan     │   │"
+"├──────────────────────────────────────────────────────────────────────────────┤"
+"│ row 1/40  col 1/9  ·  reload failed: table.json: expected value at line 3 col│"
+"└──────────────────────────────────────────────────────────────────────────────┘"
+--- styles
+row 1: 1..9 BOLD, 10..62 BOLD, 63..75 BOLD
+row 2: 1..9 BOLD | REVERSED, 9..76 fg=Indexed(252) bg=Indexed(236)

@@ -99,10 +99,7 @@ impl Table {
     /// columns and types are written out, so a shorthand file saves as a
     /// full one.
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let mut json = serde_json::to_string_pretty(self)?;
-        json.push('\n');
-        files::write_atomic(path, json.as_bytes())
-            .with_context(|| format!("writing {}", path.display()))
+        files::write_json(path, self)
     }
 
     pub fn cell(&self, row: usize, column: &str) -> Option<&Value> {
