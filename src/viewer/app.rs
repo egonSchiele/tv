@@ -257,10 +257,7 @@ impl ColonCommand {
     pub const HELP: &'static [(&'static str, &'static str)] = &[
         (":help", "show this help"),
         (":q", "quit"),
-        (
-            ":w [path]",
-            "save; default ./<title>.json, also after opening a file",
-        ),
+        (":w [path]", "save; default ./<title>.json"),
         (":w! [path]", "save, overwriting a file"),
     ];
 }

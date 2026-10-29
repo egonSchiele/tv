@@ -533,7 +533,7 @@ mod tests {
     fn help_overlay() {
         let mut app = prs();
         app.mode = Mode::Help;
-        assert_snapshot("help", &render_text(&mut app, 80, 36));
+        assert_snapshot("help", &render_text(&mut app, 60, 36));
     }
 
     #[test]

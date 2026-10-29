@@ -13,8 +13,10 @@ use table::Table;
 // `derive(Parser)` generates the argument parser from this struct's fields and
 // doc comments, so `tv --help` text comes from the `///` comments.
 #[derive(Parser)]
-// `args_conflicts_with_subcommands` lets `tv x.json` and `tv open x.json` both
-// work: a subcommand name wins, and anything else is the path.
+// The optional positional and the optional subcommand let `tv x.json` and
+// `tv open x.json` both work: a subcommand name wins, and anything else is the
+// path. `args_conflicts_with_subcommands` makes `tv x.json open y.json` an
+// error instead of silently accepting both.
 #[command(
     name = "tv",
     version,
@@ -51,6 +53,13 @@ impl Cli {
 fn load(source: &str) -> anyhow::Result<Table> {
     if source == "-" {
         let text = std::io::read_to_string(std::io::stdin()).context("reading stdin")?;
+        // The viewer reads keys from stdin. Now that the pipe is drained, point
+        // stdin at the terminal: stdout, which must be the terminal for the
+        // viewer to draw at all. crossterm would otherwise fall back to
+        // `/dev/tty`, which its reader can't watch on macOS (kqueue doesn't
+        // support that device), and fail with "Failed to initialize input reader".
+        #[cfg(unix)]
+        rustix::stdio::dup2_stdin(std::io::stdout()).context("attaching stdin to the terminal")?;
         return Table::parse(&text).context("parsing stdin");
     }
     Table::from_path(source)
@@ -60,8 +69,7 @@ fn load(source: &str) -> anyhow::Result<Table> {
 // `main` prints `Error: …` to stderr and exits with status 1.
 fn main() -> anyhow::Result<()> {
     let path = Cli::parse().path();
-    // Load first, so a bad file errors out before the screen changes. When
-    // stdin is a pipe, the viewer reads keys from the terminal (`/dev/tty`).
+    // Load first, so a bad file errors out before the screen changes.
     let table = load(&path)?;
     viewer::run(table)
 }
