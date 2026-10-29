@@ -1,0 +1,13 @@
+"┌ Open pull requests ────────────────────────────────────────────────┐"
+"│ number │ title                                              │      │"
+"│    409 │ Fix login redirect                                 │      │"
+"│    404 │ Bump serde to 1.0.229                              │      │"
+"│    403 │ Add retry with exponential backoff to the webhook… │      │"
+"├────────────────────────────────────────────────────────────────────┤"
+"│ row 1/40  col 1/9  ·  unknown command: frob                        │"
+"└────────────────────────────────────────────────────────────────────┘"
+--- styles
+row 1: 1..9 BOLD, 10..62 BOLD
+row 2: 1..9 BOLD | REVERSED, 9..63 fg=Indexed(252) bg=Indexed(236)
+row 3: 1..9 fg=Indexed(252) bg=Indexed(236)
+row 4: 1..9 fg=Indexed(252) bg=Indexed(236)

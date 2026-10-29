@@ -97,6 +97,16 @@ impl Table {
         self.rows.get(row)?.get(column)
     }
 
+    /// How a row is named to people and agents: the key value as the grid
+    /// shows it (the same text the uniqueness check compares), or `#<index>`
+    /// when the table has no key.
+    pub fn row_id(&self, index: usize) -> String {
+        match &self.key {
+            Some(key) => cell_text(self.cell(index, key)),
+            None => format!("#{index}"),
+        }
+    }
+
     pub fn key_column_index(&self) -> Option<usize> {
         let key = self.key.as_deref()?;
         self.columns.iter().position(|column| column.name == key)
@@ -311,6 +321,15 @@ mod tests {
         assert_eq!(table.key_column_index(), Some(1));
         let no_key = Table::parse(r#"[{"id": 1}]"#).unwrap();
         assert_eq!(no_key.key_column_index(), None);
+    }
+
+    #[test]
+    fn row_id_uses_the_key_or_the_index() {
+        let keyed = Table::parse(r#"{"key": "id", "rows": [{"id": 412}, {"id": "abc"}]}"#).unwrap();
+        assert_eq!(keyed.row_id(0), "412");
+        assert_eq!(keyed.row_id(1), "abc");
+        let unkeyed = Table::parse(r#"[{"a": 1}, {"a": 2}]"#).unwrap();
+        assert_eq!(unkeyed.row_id(1), "#1");
     }
 
     #[test]

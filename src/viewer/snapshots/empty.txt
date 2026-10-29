@@ -2,5 +2,7 @@
 "│ id │ title │               │"
 "│ No rows                    │"
 "├────────────────────────────┤"
-"│ rows 0  cols 2  ·  q to qui│"
+"│ no rows  ·  ? help  : comma│"
 "└────────────────────────────┘"
+--- styles
+row 1: 1..5 BOLD, 6..13 BOLD

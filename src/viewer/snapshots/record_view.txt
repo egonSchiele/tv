@@ -1,0 +1,24 @@
+"┌ Open pull requests ──────────────────────────────────────┐"
+"│     number │ 388                                         │"
+"│      title │ Handle empty response from billing API      │"
+"│     author │ jordan                                      │"
+"│      state │ open                                        │"
+"│  additions │ 88                                          │"
+"│  deletions │                                             │"
+"│     labels │ ["breaking"]                                │"
+"│ updated_at │ 2026-10-02T10:02:00Z                        │"
+"│        url │ https://github.com/example/shop/pull/388    │"
+"│                                                          │"
+"├──────────────────────────────────────────────────────────┤"
+"│ row 8/40  field 6/9  ·  j/k field  n/p row  Esc back     │"
+"└──────────────────────────────────────────────────────────┘"
+--- styles
+row 1: 1..13 BOLD
+row 2: 1..13 BOLD
+row 3: 1..13 BOLD
+row 4: 1..13 BOLD
+row 5: 1..13 BOLD
+row 6: 1..13 fg=Indexed(252) bg=Indexed(236) BOLD, 13..14 fg=Indexed(252) bg=Indexed(236), 14..59 BOLD | DIM | REVERSED
+row 7: 1..13 BOLD
+row 8: 1..13 BOLD
+row 9: 1..13 BOLD

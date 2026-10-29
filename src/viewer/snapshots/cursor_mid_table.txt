@@ -1,0 +1,21 @@
+"┌ Open pull requests ────────────────────────────────────────────────┐"
+"│ number │ author     │ state │ additions │ deletions │              │"
+"│    409 │ jordan     │ open  │       313 │        65 │              │"
+"│    404 │ dependabot │ open  │         9 │       150 │              │"
+"│    403 │ fatima     │ open  │      1204 │       150 │              │"
+"│    402 │ jordan     │ open  │      1208 │         4 │              │"
+"│    397 │ mei        │ open  │       313 │         4 │              │"
+"│    393 │ fatima     │ open  │        30 │         9 │              │"
+"│    392 │ alex       │ draft │        36 │         1 │              │"
+"├────────────────────────────────────────────────────────────────────┤"
+"│ row 4/40  col 3/9  ·  ? help  : command  q quit                    │"
+"└────────────────────────────────────────────────────────────────────┘"
+--- styles
+row 1: 1..9 BOLD, 10..22 BOLD, 23..30 BOLD, 31..42 BOLD, 43..54 BOLD
+row 2: 10..22 fg=Indexed(252) bg=Indexed(236)
+row 3: 10..22 fg=Indexed(252) bg=Indexed(236)
+row 4: 10..22 fg=Indexed(252) bg=Indexed(236)
+row 5: 1..10 fg=Indexed(252) bg=Indexed(236), 10..22 BOLD | REVERSED, 22..55 fg=Indexed(252) bg=Indexed(236)
+row 6: 10..22 fg=Indexed(252) bg=Indexed(236)
+row 7: 10..22 fg=Indexed(252) bg=Indexed(236)
+row 8: 10..22 fg=Indexed(252) bg=Indexed(236)

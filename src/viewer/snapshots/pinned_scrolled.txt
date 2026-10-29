@@ -3,5 +3,9 @@
 "│ a-fairly-long-identifier  │   10 │ kept │ │"
 "│ b-another-long-identifier │  200 │ also │ │"
 "├───────────────────────────────────────────┤"
-"│ rows 2  cols 4  ·  q to quit              │"
+"│ row 1/2  col 1/4  ·  ? help  : command  q │"
 "└───────────────────────────────────────────┘"
+--- styles
+row 1: 1..28 BOLD, 29..35 BOLD, 36..42 BOLD
+row 2: 1..28 BOLD | REVERSED, 28..43 fg=Indexed(252) bg=Indexed(236)
+row 3: 1..28 fg=Indexed(252) bg=Indexed(236)

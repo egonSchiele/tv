@@ -57,6 +57,16 @@ pub fn column_span(width: u16) -> u16 {
         .saturating_add(SEPARATOR_WIDTH)
 }
 
+/// Column indices in the order they're drawn: the pinned column first, then
+/// the rest in table order. Cursor movement, the record view, and
+/// `visible_columns` all use this, so they agree on what's left and right.
+pub fn screen_order(count: usize, pinned: Option<usize>) -> Vec<usize> {
+    pinned
+        .into_iter()
+        .chain((0..count).filter(|&index| Some(index) != pinned))
+        .collect()
+}
+
 /// A column to draw and the width to draw it at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VisibleColumn {
@@ -82,10 +92,12 @@ pub fn visible_columns(
 ) -> Vec<VisibleColumn> {
     let budget = u32::from(total_width) + u32::from(SEPARATOR_WIDTH);
     let always_shown = 1 + usize::from(pinned.is_some());
-    let scrolled = (first_col..widths.len()).filter(|&index| Some(index) != pinned);
+    let shown = screen_order(widths.len(), pinned)
+        .into_iter()
+        .filter(|&index| Some(index) == pinned || index >= first_col);
     let mut visible = Vec::new();
     let mut used: u32 = 0;
-    for (position, index) in pinned.into_iter().chain(scrolled).enumerate() {
+    for (position, index) in shown.enumerate() {
         let remaining = budget.saturating_sub(used);
         let fits = u32::from(column_span(widths[index])) <= remaining;
         if !fits && position >= always_shown {
@@ -238,6 +250,13 @@ mod tests {
         // A variation selector makes ❤️ 2 cells wide, though its characters are 1 + 0.
         assert_eq!(display_width(&fit("❤️❤️❤️❤️", 4, Left)), 4);
         assert_eq!(display_width(&fit("❤️❤️❤️❤️", 5, Left)), 5);
+    }
+
+    #[test]
+    fn screen_order_puts_the_pinned_column_first() {
+        assert_eq!(screen_order(4, None), [0, 1, 2, 3]);
+        assert_eq!(screen_order(4, Some(2)), [2, 0, 1, 3]);
+        assert_eq!(screen_order(0, None), Vec::<usize>::new());
     }
 
     #[test]

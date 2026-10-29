@@ -1,0 +1,21 @@
+"┌ Open pull requests ────────────────────────────────────────────────┐"
+"│ number │ url                                      │                │"
+"│    300 │ https://github.com/example/shop/pull/300 │                │"
+"│    297 │ https://github.com/example/shop/pull/297 │                │"
+"│    291 │ https://github.com/example/shop/pull/291 │                │"
+"│    289 │ https://github.com/example/shop/pull/289 │                │"
+"│    283 │ https://github.com/example/shop/pull/283 │                │"
+"│    278 │ https://github.com/example/shop/pull/278 │                │"
+"│    275 │ https://github.com/example/shop/pull/275 │                │"
+"├────────────────────────────────────────────────────────────────────┤"
+"│ row 40/40  col 9/9  ·  ? help  : command  q quit                   │"
+"└────────────────────────────────────────────────────────────────────┘"
+--- styles
+row 1: 1..9 BOLD, 10..52 BOLD
+row 2: 10..52 fg=Indexed(252) bg=Indexed(236)
+row 3: 10..52 fg=Indexed(252) bg=Indexed(236)
+row 4: 10..52 fg=Indexed(252) bg=Indexed(236)
+row 5: 10..52 fg=Indexed(252) bg=Indexed(236)
+row 6: 10..52 fg=Indexed(252) bg=Indexed(236)
+row 7: 10..52 fg=Indexed(252) bg=Indexed(236)
+row 8: 1..10 fg=Indexed(252) bg=Indexed(236), 10..52 BOLD | REVERSED, 52..53 fg=Indexed(252) bg=Indexed(236)

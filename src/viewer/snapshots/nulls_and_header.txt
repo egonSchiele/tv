@@ -1,0 +1,11 @@
+"┌──────────────────┐"
+"│ a │ b │          │"
+"│ 2 │   │          │"
+"│ 3 │ 4 │          │"
+"├──────────────────┤"
+"│ row 3/3  col 2/2 │"
+"└──────────────────┘"
+--- styles
+row 1: 1..4 BOLD, 5..8 BOLD
+row 2: 5..8 fg=Indexed(252) bg=Indexed(236) DIM
+row 3: 1..5 fg=Indexed(252) bg=Indexed(236), 5..8 BOLD | REVERSED, 8..9 fg=Indexed(252) bg=Indexed(236)
