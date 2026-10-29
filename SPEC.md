@@ -294,15 +294,20 @@ Short and example-driven. It should cover:
 ### Stack
 
 - Rust, single binary.
-- `ratatui` + `crossterm`: terminal UI.
+- `ratatui` (crossterm backend, via `ratatui::crossterm`): terminal UI.
 - `clap` (derive): CLI parsing.
 - `serde` + `serde_json`: formats.
 - `anyhow`: errors.
 - `unicode-width`: column measurement.
-- `dirs`: home directory.
-- `rand`: IDs.
-- `chrono` (or `jiff`): timestamps.
-- Dev: `insta` (snapshot tests), `assert_cmd` + `tempfile` (CLI tests).
+- Dev: `tempfile` (CLI tests).
+
+Keep dependencies few to limit supply-chain risk (see "Dependencies" in README.md). Things the standard library covers without a crate:
+
+- Home directory: `std::env::home_dir()`.
+- Random IDs: `std::hash::RandomState`, which the OS seeds. IDs only need to avoid collisions, not resist guessing; check for an existing session directory and retry.
+- Timestamps: a small function that formats `SystemTime::now()` as UTC RFC 3339 (`2026-10-28T19:02:11Z`), with unit tests against known dates.
+- CLI tests: `std::process::Command` with `env!("CARGO_BIN_EXE_tv")`.
+- Snapshot tests: a small helper that compares text to a file under `snapshots/` (see Testing).
 
 ### Module layout
 
@@ -326,8 +331,8 @@ Keep `render` pure (state in, frame out) and keep all mutation in `app.rs`. This
 ### Testing
 
 - Unit tests: table inference and validation, row ID derivation, comment folding (awaiting/orphaned/deleted), column width and visible-range calculation.
-- Render snapshots: ratatui `TestBackend` + `insta` for the grid, truncation, pinned column, comment markers, and record view.
-- CLI tests: `assert_cmd` with `TV_HOME` pointed at a temp dir; exercise new → push → comment → reply → save → open-file round trip.
+- Render snapshots: ratatui `TestBackend` rendered to text and compared to a committed `.txt` file (`make snapshots` rewrites them; review with `git diff`) for the grid, truncation, pinned column, comment markers, and record view.
+- CLI tests: `std::process::Command` on `env!("CARGO_BIN_EXE_tv")` with `TV_HOME` pointed at a temp dir; exercise new → push → comment → reply → save → open-file round trip.
 
 ## Milestones
 
