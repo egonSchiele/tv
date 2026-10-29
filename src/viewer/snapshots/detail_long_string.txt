@@ -1,0 +1,21 @@
+"┌────────────────────────────────────────────────┐"
+"│ id │ note                                      │"
+"│  7 │ First line of a long note that keeps go…  │"
+"│    ┌ note · row 7 ────────────────────────┐    │"
+"│    │First line of a long note that keeps  │    │"
+"│    │going well past the width of the popup│    │"
+"│    │so it has to wrap.                    │    │"
+"│    │Second line.    Tabbed.               │    │"
+"│    │                                      │    │"
+"│    │                                      │    │"
+"│    │Comments                              │    │"
+"│    │none yet                              │    │"
+"│    └──────────────────────────────────────┘    │"
+"├────────────────────────────────────────────────┤"
+"│ row 1/1  col 2/2  ·  ? help  : command  q quit │"
+"└────────────────────────────────────────────────┘"
+--- styles
+row 1: 1..5 BOLD, 6..48 BOLD
+row 2: 1..6 bg=Indexed(236), 6..48 BOLD | REVERSED
+row 10: 6..14 BOLD
+row 11: 6..14 DIM

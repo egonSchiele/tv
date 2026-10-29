@@ -94,8 +94,49 @@ pub enum Action {
     LastCol,
     Help,
     CommandLine,
+    Detail,
+    Record,
     Quit,
 }
+
+/// Keys in the record view, which reuses the grid cursor: the cursor's column
+/// is the current field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordAction {
+    NextField,
+    PreviousField,
+    NextRow,
+    PreviousRow,
+    Back,
+}
+
+pub const RECORD_BINDINGS: &[Binding<RecordAction>] = &[
+    Binding {
+        keys: &[Key::plain(KeyCode::Down), Key::char('j')],
+        action: RecordAction::NextField,
+        help: "next field",
+    },
+    Binding {
+        keys: &[Key::plain(KeyCode::Up), Key::char('k')],
+        action: RecordAction::PreviousField,
+        help: "previous field",
+    },
+    Binding {
+        keys: &[Key::char('n')],
+        action: RecordAction::NextRow,
+        help: "next row",
+    },
+    Binding {
+        keys: &[Key::char('p')],
+        action: RecordAction::PreviousRow,
+        help: "previous row",
+    },
+    Binding {
+        keys: &[Key::plain(KeyCode::Esc), Key::char('r'), Key::char('q')],
+        action: RecordAction::Back,
+        help: "back to the grid",
+    },
+];
 
 /// What the keyboard is driving right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +144,10 @@ pub enum Mode {
     Grid,
     Help,
     Command(CommandLine),
+    /// A popup with the cursor cell's full value.
+    Detail,
+    /// The cursor's row as a list of fields.
+    Record,
 }
 
 /// The `:` line being typed. `cursor` counts characters, not bytes, so typing
@@ -256,6 +301,16 @@ pub const GRID_BINDINGS: &[Binding<Action>] = &[
         help: "last column",
     },
     Binding {
+        keys: &[Key::plain(KeyCode::Enter)],
+        action: Action::Detail,
+        help: "cell detail",
+    },
+    Binding {
+        keys: &[Key::char('r')],
+        action: Action::Record,
+        help: "record view",
+    },
+    Binding {
         keys: &[Key::char(':')],
         action: Action::CommandLine,
         help: "command line",
@@ -375,6 +430,40 @@ impl App {
                     _ => {}
                 }
             }
+            Mode::Detail => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
+                    self.mode = Mode::Grid;
+                }
+            }
+            Mode::Record => {
+                if let Some(action) = lookup(RECORD_BINDINGS, &key) {
+                    self.perform_in_record(action);
+                }
+            }
+        }
+    }
+
+    /// Moves go through `move_to`, so the grid is already scrolled to the
+    /// cursor when the record view closes.
+    fn perform_in_record(&mut self, action: RecordAction) {
+        let Cursor { row, col } = self.cursor;
+        match action {
+            RecordAction::NextField => self.move_to(row, col + 1),
+            RecordAction::PreviousField => self.move_to(row, col.saturating_sub(1)),
+            RecordAction::NextRow => self.move_to(row + 1, col),
+            RecordAction::PreviousRow => self.move_to(row.saturating_sub(1), col),
+            RecordAction::Back => self.mode = Mode::Grid,
+        }
+    }
+
+    /// Open a view of the cursor's cell or row, if there is one.
+    fn open_cell_view(&mut self, mode: Mode) {
+        if self.table.rows.is_empty() {
+            self.set_message("no rows".to_string());
+        } else if self.table.columns.is_empty() {
+            self.set_message("no columns".to_string());
+        } else {
+            self.mode = mode;
         }
     }
 
@@ -436,6 +525,8 @@ impl App {
             Action::LastCol => self.move_to(row, usize::MAX),
             Action::Help => self.mode = Mode::Help,
             Action::CommandLine => self.mode = Mode::Command(CommandLine::default()),
+            Action::Detail => self.open_cell_view(Mode::Detail),
+            Action::Record => self.open_cell_view(Mode::Record),
             Action::Quit => self.should_quit = true,
         }
     }
@@ -817,6 +908,76 @@ mod tests {
         );
         press(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
         assert_eq!(app.mode, Mode::Command(CommandLine::default()));
+    }
+
+    #[test]
+    fn enter_opens_cell_detail_and_esc_enter_or_q_close_it() {
+        for close in [KeyCode::Esc, KeyCode::Enter, KeyCode::Char('q')] {
+            let mut app = grid_app(None);
+            press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+            assert_eq!(app.mode, Mode::Detail);
+            press_char(&mut app, 'j'); // ignored in the popup
+            press(&mut app, close, KeyModifiers::NONE);
+            assert_eq!(app.mode, Mode::Grid);
+            assert!(!app.should_quit);
+            assert_eq!(app.cursor, Cursor::default());
+        }
+    }
+
+    #[test]
+    fn record_view_moves_the_grid_cursor() {
+        let mut app = grid_app(None);
+        press_char(&mut app, 'r');
+        assert_eq!(app.mode, Mode::Record);
+        press_char(&mut app, 'n');
+        press_char(&mut app, 'n');
+        press_char(&mut app, 'j');
+        press(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        press_char(&mut app, 'k');
+        press_char(&mut app, 'p');
+        // `q` goes back to the grid instead of quitting.
+        press_char(&mut app, 'q');
+        assert_eq!(app.mode, Mode::Grid);
+        assert!(!app.should_quit);
+        assert_eq!(app.cursor, Cursor { row: 1, col: 1 });
+    }
+
+    #[test]
+    fn record_view_scrolls_the_grid_to_the_cursor() {
+        let mut app = grid_app(None);
+        press_char(&mut app, 'r');
+        for _ in 0..15 {
+            press_char(&mut app, 'n');
+        }
+        for _ in 0..9 {
+            press_char(&mut app, 'j');
+        }
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.cursor, Cursor { row: 15, col: 9 });
+        assert_eq!(app.first_row, 6);
+        assert!(on_screen(&app, 9));
+    }
+
+    #[test]
+    fn cell_views_need_cells() {
+        let mut app =
+            App::new(Table::parse(r#"{"columns": [{"name": "a"}], "rows": []}"#).unwrap());
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Grid);
+        assert_eq!(message(&app), Some("no rows"));
+
+        let mut app = App::new(Table::parse("[{}]").unwrap());
+        press_char(&mut app, 'r');
+        assert_eq!(app.mode, Mode::Grid);
+        assert_eq!(message(&app), Some("no columns"));
+    }
+
+    #[test]
+    fn every_record_binding_has_help_text() {
+        for binding in RECORD_BINDINGS {
+            assert_ne!(binding.help, "");
+            assert_ne!(binding.keys.len(), 0);
+        }
     }
 
     #[test]

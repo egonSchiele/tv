@@ -3,11 +3,11 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use serde_json::Value;
 
-use super::app::{App, ColonCommand, GRID_BINDINGS, Mode, key_label};
+use super::app::{App, Binding, ColonCommand, GRID_BINDINGS, Mode, RECORD_BINDINGS, key_label};
 use super::layout::{self, Align, VisibleColumn};
 use crate::table::{ColumnType, cell_text, single_line};
 
@@ -59,24 +59,30 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     frame.render_widget(block, screen);
 
-    let visible = app.visible_columns();
-    frame.render_widget(header_line(app, &visible), areas.header);
-    frame.render_widget(
-        Paragraph::new(body_lines(app, &visible, areas.body.height)),
-        areas.body,
-    );
+    if app.mode == Mode::Record {
+        draw_record(frame, app, areas.header.union(areas.body));
+    } else {
+        let visible = app.visible_columns();
+        frame.render_widget(header_line(app, &visible, areas.header.width), areas.header);
+        frame.render_widget(
+            Paragraph::new(body_lines(app, &visible, areas.body)),
+            areas.body,
+        );
+    }
     frame.render_widget(Line::from(divider(screen.width)), areas.divider);
     draw_status(frame, app, areas.status);
 
-    if app.mode == Mode::Help {
-        draw_help(frame, screen);
+    match app.mode {
+        Mode::Help => draw_help(frame, screen),
+        Mode::Detail => draw_detail(frame, app, screen),
+        _ => {}
     }
 }
 
-fn header_line(app: &App, visible: &[VisibleColumn]) -> Line<'static> {
+fn header_line(app: &App, visible: &[VisibleColumn], width: u16) -> Line<'static> {
     let columns = &app.table().columns;
     let header = app.theme.header;
-    grid_line(visible, Style::new(), |col| {
+    grid_line(visible, width, Style::new(), |col| {
         (
             columns[col].display_name(),
             align(columns[col].kind),
@@ -85,7 +91,8 @@ fn header_line(app: &App, visible: &[VisibleColumn]) -> Line<'static> {
     })
 }
 
-fn body_lines(app: &App, visible: &[VisibleColumn], height: u16) -> Vec<Line<'static>> {
+fn body_lines(app: &App, visible: &[VisibleColumn], area: Rect) -> Vec<Line<'static>> {
+    let (width, height) = (area.width, area.height);
     let table = app.table();
     if table.rows.is_empty() {
         return vec![Line::from(" No rows")];
@@ -98,7 +105,7 @@ fn body_lines(app: &App, visible: &[VisibleColumn], height: u16) -> Vec<Line<'st
             } else {
                 Style::new()
             };
-            grid_line(visible, row_style, |col| {
+            grid_line(visible, width, row_style, |col| {
                 let column = &table.columns[col];
                 let text = cell_text(table.cell(row, &column.name));
                 (text, align(column.kind), cell_style(app, row, col))
@@ -142,8 +149,12 @@ fn align(kind: Option<ColumnType>) -> Align {
 /// sized with `layout::fit`, padded, and followed by the separator. The header
 /// and body rows both go through here; `cell` says what goes in each column.
 /// Separators take `row_style`, so a highlighted row isn't striped at each `│`.
+///
+/// When the row fills `width` exactly, the last separator would sit against
+/// the right border and look doubled (`││`), so it's dropped.
 fn grid_line(
     visible: &[VisibleColumn],
+    width: u16,
     row_style: Style,
     cell: impl Fn(usize) -> (String, Align, Style),
 ) -> Line<'static> {
@@ -159,7 +170,11 @@ fn grid_line(
             ]
         })
         .collect();
-    Line::from(spans)
+    let mut line = Line::from(spans);
+    if line.width() == usize::from(width) {
+        line.spans.pop();
+    }
+    line
 }
 
 fn divider(width: u16) -> String {
@@ -188,59 +203,68 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(status_line(app), area);
 }
 
+/// Status-line hints in the record view.
+const RECORD_HINTS: &str = "j/k field  n/p row  Esc back";
+
 fn status_line(app: &App) -> Line<'static> {
     let table = app.table();
-    let position = if table.rows.is_empty() {
-        "no rows".to_string()
-    } else {
-        format!(
-            "row {}/{}  col {}/{}",
-            app.cursor.row + 1,
-            table.rows.len(),
-            app.cursor.col + 1,
-            table.columns.len()
+    let (rows, cols) = (table.rows.len(), table.columns.len());
+    let (row, col) = (app.cursor.row + 1, app.cursor.col + 1);
+    let (position, hints) = if rows == 0 {
+        ("no rows".to_string(), STATUS_HINTS)
+    } else if app.mode == Mode::Record {
+        (
+            format!("row {row}/{rows}  field {col}/{cols}"),
+            RECORD_HINTS,
         )
+    } else {
+        (format!("row {row}/{rows}  col {col}/{cols}"), STATUS_HINTS)
     };
     let after = app
         .message
         .as_ref()
-        .map_or(STATUS_HINTS, |message| message.text.as_str());
+        .map_or(hints, |message| message.text.as_str());
     Line::from(format!(" {position}  ·  {after}"))
 }
 
-/// A centered box listing every grid key and `:` command. It's built from
-/// `GRID_BINDINGS` and `ColonCommand::HELP`, so it always matches what works.
+/// A centered box listing every key and `:` command. It's built from the
+/// bindings tables and `ColonCommand::HELP`, so it always matches what works.
 fn draw_help(frame: &mut Frame, screen: Rect) {
-    let keys: Vec<(String, &str)> = GRID_BINDINGS
+    let sections: [(&str, Vec<(String, &str)>); 3] = [
+        ("Grid", binding_rows(GRID_BINDINGS)),
+        ("Record view", binding_rows(RECORD_BINDINGS)),
+        (
+            "Commands",
+            ColonCommand::HELP
+                .iter()
+                .map(|&(name, help)| (name.to_string(), help))
+                .collect(),
+        ),
+    ];
+    let label_width = sections
         .iter()
-        .map(|binding| {
-            let labels: Vec<String> = binding.keys.iter().copied().map(key_label).collect();
-            (labels.join(" "), binding.help)
-        })
-        .collect();
-    let commands: Vec<(String, &str)> = ColonCommand::HELP
-        .iter()
-        .map(|&(name, help)| (name.to_string(), help))
-        .collect();
-    let label_width = keys
-        .iter()
-        .chain(&commands)
+        .flat_map(|(_, rows)| rows)
         .map(|(label, _)| layout::display_width(label))
         .max()
         .unwrap_or(0);
-    let help_line = |(label, help): &(String, &str)| {
-        Line::from(vec![
-            Span::styled(
-                format!(" {} ", layout::fit(label, label_width, Align::Right)),
-                Style::new().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!(" {help} ")),
-        ])
-    };
+    let bold = Style::new().add_modifier(Modifier::BOLD);
 
-    let mut lines: Vec<Line> = keys.iter().map(help_line).collect();
-    lines.push(Line::from(""));
-    lines.extend(commands.iter().map(help_line));
+    let mut lines: Vec<Line> = Vec::new();
+    for (heading, rows) in &sections {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::styled(format!(" {heading}"), bold));
+        for (label, help) in rows {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", layout::fit(label, label_width, Align::Right)),
+                    bold,
+                ),
+                Span::raw(format!(" {help} ")),
+            ]));
+        }
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(" Press any key to close").dim());
 
@@ -251,6 +275,114 @@ fn draw_help(frame: &mut Frame, screen: Rect) {
         Paragraph::new(lines).block(Block::bordered().title(" Keys ")),
         popup,
     );
+}
+
+/// `(keys, help)` for each binding, with keys as the overlay writes them.
+fn binding_rows<A>(bindings: &[Binding<A>]) -> Vec<(String, &'static str)> {
+    bindings
+        .iter()
+        .map(|binding| {
+            let labels: Vec<String> = binding.keys.iter().copied().map(key_label).collect();
+            (labels.join(" "), binding.help)
+        })
+        .collect()
+}
+
+/// The cursor cell's full value in a popup: strings as written (newlines
+/// kept), nested JSON pretty-printed, null dimmed.
+fn draw_detail(frame: &mut Frame, app: &App, screen: Rect) {
+    let table = app.table();
+    let (row, column) = (app.cursor.row, &table.columns[app.cursor.col]);
+    let value: Text = match table.cell(row, &column.name) {
+        None | Some(Value::Null) => Text::styled("null", app.theme.null),
+        // Tabs would be dropped by the terminal; show them as spaces.
+        Some(Value::String(text)) => Text::raw(text.replace('\t', "    ")),
+        Some(nested @ (Value::Array(_) | Value::Object(_))) => {
+            // Pretty-printing a `Value` can't fail.
+            Text::raw(serde_json::to_string_pretty(nested).unwrap_or_default())
+        }
+        Some(other) => Text::raw(other.to_string()),
+    };
+    let title = format!(" {} · row {} ", column.display_name(), table.row_id(row));
+
+    let popup = screen.centered(Constraint::Percentage(80), Constraint::Percentage(60));
+    let block = Block::bordered().title(title);
+    let inner = block.inner(popup);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(block, popup);
+
+    // The bottom two lines are for the cell's comments (ADI-224).
+    let [value_area, comments_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(2)]).areas(inner);
+    frame.render_widget(Paragraph::new(value).wrap(Wrap { trim: false }), value_area);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled("Comments", Style::new().add_modifier(Modifier::BOLD)),
+            Line::from("none yet").dim(),
+        ]),
+        comments_area,
+    );
+}
+
+/// The cursor's row as one line per field: name, `│`, value. The cursor's
+/// column is the current field, so this needs no state of its own.
+fn draw_record(frame: &mut Frame, app: &App, area: Rect) {
+    let table = app.table();
+    let theme = &app.theme;
+    let cursor = app.cursor;
+    let name_width = table
+        .columns
+        .iter()
+        .map(|column| layout::display_width(&column.display_name()))
+        .max()
+        .unwrap_or(0)
+        .min(layout::DEFAULT_WIDTH_CAP);
+    // The name takes a column span (padding and separator); the value gets
+    // padding on both sides.
+    let value_width = area
+        .width
+        .saturating_sub(layout::column_span(name_width) + 2 * layout::CELL_PADDING);
+    let padding = " ".repeat(usize::from(layout::CELL_PADDING));
+
+    // Scroll so the current field is on screen; it sits on the last line once
+    // there are more fields than lines.
+    let height = usize::from(area.height);
+    let first = cursor.col.saturating_sub(height.saturating_sub(1));
+    let lines: Vec<Line> = table
+        .columns
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(height)
+        .map(|(col, column)| {
+            let value = table.cell(cursor.row, &column.name);
+            let current = col == cursor.col;
+            let line_style = if current {
+                theme.cursor_line
+            } else {
+                Style::new()
+            };
+            let mut value_style = if current {
+                theme.cursor_cell
+            } else {
+                Style::new()
+            };
+            if value.is_none_or(Value::is_null) {
+                value_style = value_style.patch(theme.null);
+            }
+            let name = layout::fit(&column.display_name(), name_width, Align::Right);
+            let text = layout::fit(&cell_text(value), value_width, Align::Left);
+            Line::from(vec![
+                Span::styled(
+                    format!("{padding}{name}{padding}"),
+                    theme.header.patch(line_style),
+                ),
+                Span::styled(layout::SEPARATOR, line_style),
+                Span::styled(format!("{padding}{text}{padding}"), value_style),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 /// A centered box big enough for `width` × `height` of content plus its
@@ -390,7 +522,7 @@ mod tests {
     fn help_overlay() {
         let mut app = prs();
         app.mode = Mode::Help;
-        assert_snapshot("help", &render_text(&mut app, 60, 26));
+        assert_snapshot("help", &render_text(&mut app, 60, 36));
     }
 
     #[test]
@@ -423,12 +555,51 @@ mod tests {
     }
 
     #[test]
+    fn detail_long_string() {
+        let mut app = app(
+            r#"{"key": "id", "rows": [{"id": 7, "note": "First line of a long note that keeps going well past the width of the popup so it has to wrap.\nSecond line.\tTabbed."}]}"#,
+        );
+        app.cursor = Cursor { row: 0, col: 1 };
+        app.mode = Mode::Detail;
+        assert_snapshot("detail_long_string", &render_text(&mut app, 50, 16));
+    }
+
+    #[test]
+    fn detail_nested_and_null() {
+        let mut app = app(r#"[{"meta": {"labels": ["bug", "ci"], "draft": false}, "gone": null}]"#);
+        app.mode = Mode::Detail;
+        // Tall enough for the whole value: the popup is 60% of the height
+        // and doesn't scroll yet.
+        assert_snapshot("detail_nested", &render_text(&mut app, 50, 20));
+        app.cursor = Cursor { row: 0, col: 1 };
+        assert_snapshot("detail_null", &render_text(&mut app, 50, 12));
+    }
+
+    #[test]
+    fn record_view() {
+        let mut app = prs();
+        app.cursor = Cursor { row: 7, col: 5 };
+        app.mode = Mode::Record;
+        assert_snapshot("record_view", &render_text(&mut app, 60, 14));
+    }
+
+    #[test]
+    fn record_view_scrolls_to_the_current_field() {
+        let mut app = prs();
+        app.cursor = Cursor { row: 0, col: 8 };
+        app.mode = Mode::Record;
+        assert_snapshot("record_view_scrolled", &render_text(&mut app, 60, 9));
+    }
+
+    #[test]
     fn tiny_terminal_does_not_panic() {
         for (width, height) in [(0, 0), (1, 1), (3, 2), (10, 3)] {
             render(&mut prs(), width, height);
-            let mut help = prs();
-            help.mode = Mode::Help;
-            render(&mut help, width, height);
+            for mode in [Mode::Help, Mode::Detail, Mode::Record] {
+                let mut app = prs();
+                app.mode = mode;
+                render(&mut app, width, height);
+            }
         }
     }
 }

@@ -1,7 +1,7 @@
 "┌ Open pull requests ──────────────────────────────────────┐"
 "│ number │ title                                           │"
-"│    409 │ Fix login redirect                              │"
-"│    404 ┌ Keys ───────────────────────────────────┐       │"
+"│    409 ┌ Keys ───────────────────────────────────┐       │"
+"│    404 │ Grid                                    │       │"
 "│    403 │         ↓ j  move down                  │ webh… │"
 "│    402 │         ↑ k  move up                    │       │"
 "│    397 │         → l  move right                 │me in… │"
@@ -12,22 +12,32 @@
 "│    384 │           G  last row                   │and c… │"
 "│    382 │           0  first column               │       │"
 "│    378 │           $  last column                │       │"
-"│    376 │           :  command line               │       │"
-"│    374 │           ?  show this help             │vent … │"
-"│    372 │    q Ctrl-c  quit                       │       │"
-"│    368 │                                         │       │"
-"│    364 │       :help  show this help             │ut co… │"
-"│    361 │          :q  quit                       │       │"
-"│    357 │   :w [path]  save (not implemented yet) │       │"
-"│    351 │                                         │       │"
-"│    350 │ Press any key to close                  │e has… │"
+"│    376 │       Enter  cell detail                │       │"
+"│    374 │           r  record view                │vent … │"
+"│    372 │           :  command line               │       │"
+"│    368 │           ?  show this help             │       │"
+"│    364 │    q Ctrl-c  quit                       │ut co… │"
+"│    361 │                                         │       │"
+"│    357 │ Record view                             │       │"
+"│    351 │         ↓ j  next field                 │       │"
+"│    350 │         ↑ k  previous field             │e has… │"
+"│    345 │           n  next row                   │       │"
+"│    344 │           p  previous row               │op     │"
+"│    341 │     Esc r q  back to the grid           │       │"
+"│    337 │                                         │       │"
+"│    333 │ Commands                                │nd ad… │"
+"│    331 │       :help  show this help             │s      │"
+"│    325 │          :q  quit                       │       │"
+"│    322 │   :w [path]  save (not implemented yet) │       │"
+"│    318 │                                         │       │"
+"│    313 │ Press any key to close                  │t run… │"
 "├────────└─────────────────────────────────────────┘───────┤"
 "│ row 1/40  col 1/9  ·  ? help  : command  q quit          │"
 "└──────────────────────────────────────────────────────────┘"
 --- styles
 row 1: 1..9 BOLD, 10..59 BOLD
-row 2: 1..9 BOLD | REVERSED, 9..59 bg=Indexed(236)
-row 3: 1..9 bg=Indexed(236)
+row 2: 1..9 BOLD | REVERSED, 52..59 bg=Indexed(236)
+row 3: 1..9 bg=Indexed(236), 10..15 BOLD
 row 4: 1..9 bg=Indexed(236), 10..23 BOLD
 row 5: 1..9 bg=Indexed(236), 10..23 BOLD
 row 6: 1..9 bg=Indexed(236), 10..23 BOLD
@@ -41,9 +51,19 @@ row 13: 1..9 bg=Indexed(236), 10..23 BOLD
 row 14: 1..9 bg=Indexed(236), 10..23 BOLD
 row 15: 1..9 bg=Indexed(236), 10..23 BOLD
 row 16: 1..9 bg=Indexed(236), 10..23 BOLD
-row 17: 1..9 bg=Indexed(236)
+row 17: 1..9 bg=Indexed(236), 10..23 BOLD
 row 18: 1..9 bg=Indexed(236), 10..23 BOLD
-row 19: 1..9 bg=Indexed(236), 10..23 BOLD
-row 20: 1..9 bg=Indexed(236), 10..23 BOLD
-row 21: 1..9 bg=Indexed(236)
-row 22: 1..9 bg=Indexed(236), 10..33 DIM
+row 19: 1..9 bg=Indexed(236)
+row 20: 1..9 bg=Indexed(236), 10..22 BOLD
+row 21: 1..9 bg=Indexed(236), 10..23 BOLD
+row 22: 1..9 bg=Indexed(236), 10..23 BOLD
+row 23: 1..9 bg=Indexed(236), 10..23 BOLD
+row 24: 1..9 bg=Indexed(236), 10..23 BOLD
+row 25: 1..9 bg=Indexed(236), 10..23 BOLD
+row 26: 1..9 bg=Indexed(236)
+row 27: 1..9 bg=Indexed(236), 10..19 BOLD
+row 28: 1..9 bg=Indexed(236), 10..23 BOLD
+row 29: 1..9 bg=Indexed(236), 10..23 BOLD
+row 30: 1..9 bg=Indexed(236), 10..23 BOLD
+row 31: 1..9 bg=Indexed(236)
+row 32: 1..9 bg=Indexed(236), 10..33 DIM

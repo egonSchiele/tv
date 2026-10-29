@@ -252,7 +252,7 @@ Add `row_id(index) -> String`, deferred from ADI-198. It returns `cell_text` of 
 - **Styles:** the current field's line uses `theme.cursor_line`, its value uses `theme.cursor_cell`, and nulls use `theme.null`.
 - **Scrolling:** if there are more fields than lines, the list scrolls so the current field stays visible. That's computed in render from the cursor, so it needs no state.
 - **Status line:** `row {n}/{total}  field {f}/{cols}  ·  j/k field  n/p row  Esc back`.
-- **Keys:** a `RECORD_BINDINGS` table. `j`/`k`/`↓`/`↑` move the field (the cursor column), `n`/`p` move the row, and `Esc`/`r`/`q` go back to the grid. Moves use the same clamp and `scroll_into_view` as the grid, so the grid is already scrolled to the cursor when you return.
+- **Keys:** a `RECORD_BINDINGS` table, which the help overlay also lists in its own section. `j`/`k`/`↓`/`↑` move the field (the cursor column), `n`/`p` move the row, and `Esc`/`r`/`q` go back to the grid. Moves use the same clamp and `scroll_into_view` as the grid, so the grid is already scrolled to the cursor when you return.
 - **Empty table:** `r` sets the message `no rows`.
 
 ### Tests
