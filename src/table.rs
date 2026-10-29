@@ -8,6 +8,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::comments::Thread;
 use crate::files;
 
 pub type Row = Map<String, Value>;
@@ -25,8 +26,11 @@ pub struct Table {
     pub key: Option<String>,
     pub columns: Vec<Column>,
     pub rows: Vec<Row>,
+    /// The file format's `comments`: read from a saved file so `create` can
+    /// move them into the session's log, and filled from the log when saving.
+    /// Empty in a session's own `table.json`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub comments: Vec<Value>, // opaque until ADI-223 defines the type
+    pub comments: Vec<Thread>,
 }
 
 /// The table as written in JSON, before inference and validation. It exists
@@ -43,7 +47,7 @@ struct RawTable {
     columns: Vec<Column>,
     rows: Vec<Row>,
     #[serde(default)]
-    comments: Vec<Value>,
+    comments: Vec<Thread>,
 }
 
 fn default_version() -> u32 {
@@ -114,6 +118,14 @@ impl Table {
             Some(key) => cell_text(self.cell(index, key)),
             None => format!("#{index}"),
         }
+    }
+
+    /// Each row's ID (`row_id`) and its index. Row IDs are unique: a key's
+    /// values are checked (`validate_key`), and `#<index>` can't repeat.
+    pub fn row_indices(&self) -> HashMap<String, usize> {
+        (0..self.rows.len())
+            .map(|index| (self.row_id(index), index))
+            .collect()
     }
 
     pub fn key_column_index(&self) -> Option<usize> {
@@ -290,14 +302,35 @@ mod tests {
         assert!(columns.iter().all(|column| column["type"].is_string()));
     }
 
+    /// A table with one comment thread, as a saved file has it.
+    const WITH_COMMENTS: &str = r#"{"key": "a", "rows": [{"a": 1}], "comments": [
+        {"id": "c1", "row_id": "1", "column": "a", "messages": [
+            {"id": "c1", "author": "user", "text": "hi", "ts": "2026-10-28T19:03:00Z"}
+        ]}
+    ]}"#;
+
+    #[test]
+    fn comments_parse_as_threads() {
+        let table = Table::parse(WITH_COMMENTS).unwrap();
+        assert_eq!(table.comments.len(), 1);
+        assert_eq!(table.comments[0].id, "c1");
+        assert_eq!(table.comments[0].messages[0].text, "hi");
+    }
+
+    #[test]
+    fn a_thread_without_messages_is_an_error() {
+        let message = error_message(
+            r#"{"rows": [], "comments": [{"id": "c1", "row_id": "1", "column": "a"}]}"#,
+        );
+        assert!(message.contains("messages"), "{message}");
+    }
+
     #[test]
     fn save_keeps_comments() {
-        let table =
-            Table::parse(r#"{"rows": [{"a": 1}], "comments": [{"id": "c1", "text": "hi"}]}"#)
-                .unwrap();
-        let (reloaded, _) = save_and_reload(&table);
+        let table = Table::parse(WITH_COMMENTS).unwrap();
+        let (reloaded, json) = save_and_reload(&table);
         assert_eq!(reloaded.comments, table.comments);
-        assert_eq!(reloaded.comments.len(), 1);
+        assert_eq!(json["comments"][0]["messages"][0]["text"], "hi");
     }
 
     #[test]
@@ -382,6 +415,16 @@ mod tests {
         assert_eq!(keyed.row_id(1), "abc");
         let unkeyed = Table::parse(r#"[{"a": 1}, {"a": 2}]"#).unwrap();
         assert_eq!(unkeyed.row_id(1), "#1");
+    }
+
+    #[test]
+    fn row_indices_map_row_ids_to_indices() {
+        let keyed = Table::parse(r#"{"key": "id", "rows": [{"id": 412}, {"id": "abc"}]}"#).unwrap();
+        let expected = HashMap::from([("412".to_string(), 0), ("abc".to_string(), 1)]);
+        assert_eq!(keyed.row_indices(), expected);
+        let unkeyed = Table::parse(r#"[{"a": 1}, {"a": 2}]"#).unwrap();
+        let expected = HashMap::from([("#0".to_string(), 0), ("#1".to_string(), 1)]);
+        assert_eq!(unkeyed.row_indices(), expected);
     }
 
     #[test]

@@ -1,14 +1,15 @@
 //! The viewer's half of the session directory: `view.json` out (where the
-//! cursor is) and `table.json` in (live reload). Everything the event loop
-//! does to the filesystem goes through here, with the time passed in so tests
-//! control it. Later polls (`comments.jsonl`, `goto.json`) go in `tick`,
-//! next to the `table.json` one.
+//! cursor is), `table.json` in (live reload), and `comments.jsonl` both ways.
+//! Everything the event loop does to the filesystem goes through here, with
+//! the time passed in so tests control it. `tick` is a list of steps; a later
+//! poll (`goto.json`) is one more step.
 
 use std::io;
 use std::time::{Duration, Instant, SystemTime};
 
 use super::app::App;
-use crate::session::{Fingerprint, Session, TABLE_FILE, VIEW_FILE, View};
+use crate::comments::Log;
+use crate::session::{COMMENTS_FILE, Fingerprint, Session, TABLE_FILE, VIEW_FILE, View};
 use crate::table::Table;
 use crate::time;
 
@@ -27,6 +28,13 @@ pub struct SessionSync {
     /// `table.json` as of the last look, so a tick only parses it when it
     /// changed. `None` before the first look, or if it couldn't be read.
     seen: Option<Fingerprint>,
+    /// `comments.jsonl` as of the last look. `None` means no log, which is
+    /// also what `App` starts with, so the first tick reads one only if it
+    /// exists.
+    comments_seen: Option<Fingerprint>,
+    /// The last skipped-lines warning shown. A bad line never leaves the
+    /// log, so without this every append would show it again.
+    warned: Option<String>,
 }
 
 /// What `view.json` records about the cursor: the row's ID and the column's
@@ -71,21 +79,68 @@ impl SessionSync {
             // shown (the wrong order; see `changed_table`). So the first tick
             // parses `table.json` again. Unchanged, it highlights nothing.
             seen: None,
+            comments_seen: None,
+            warned: None,
         };
         sync.write(app, position);
         sync
     }
 
-    /// Called once per event-loop iteration, before drawing. Reloads
-    /// `table.json` if it changed, then writes `view.json` if the cursor
-    /// moved and the debounce has passed. A reload can move the cursor (its
-    /// row was deleted), so it goes first.
+    /// Called once per event-loop iteration, before drawing. A reload can
+    /// move the cursor (its row was deleted), so the polls come before the
+    /// `view.json` write. Each step is its own method, so one returning early
+    /// can't skip the next.
     pub fn tick(&mut self, app: &mut App, now: Instant) {
+        self.write_pending(app);
+        self.poll_table(app, now);
+        self.poll_comments(app);
+        self.write_view_if_moved(app, now);
+    }
+
+    /// Write the comment events from the keyboard since the last tick.
+    /// `poll_comments` then sees the log grow and reads it back, so a new
+    /// comment shows up on the same frame. A failed write loses what was
+    /// typed, and says so; there's nowhere to keep it once the session is
+    /// gone.
+    fn write_pending(&mut self, app: &mut App) {
+        if let Err(error) = self.session.append_events(&app.take_pending()) {
+            app.set_message(format!("not saved: {}", file_error(COMMENTS_FILE, &error)));
+        }
+    }
+
+    /// Reload `table.json` into `app` if it changed. A failure keeps the
+    /// last table and says why in the status line until a reload succeeds.
+    fn poll_table(&mut self, app: &mut App, now: Instant) {
         match self.changed_table() {
             Ok(None) => {}
             Ok(Some(table)) => app.set_table(table, now),
             Err(error) => app.reload_error = Some(file_error(TABLE_FILE, &error)),
         }
+    }
+
+    /// Load `comments.jsonl` into `app` if it changed, saying so if lines were
+    /// skipped or it couldn't be read. A persistent error sets the message
+    /// again every tick, so it stays up while the problem lasts. It isn't
+    /// `reload_error`: that one belongs to `table.json`.
+    fn poll_comments(&mut self, app: &mut App) {
+        match self.changed_comments() {
+            Ok(None) => {}
+            Ok(Some(log)) => {
+                let warning = log.warning();
+                if warning != self.warned {
+                    if let Some(warning) = &warning {
+                        app.set_message(format!("{COMMENTS_FILE}: {warning}"));
+                    }
+                    self.warned = warning;
+                }
+                app.set_events(log.events);
+            }
+            Err(error) => app.set_message(file_error(COMMENTS_FILE, &error)),
+        }
+    }
+
+    /// Write `view.json` if the cursor moved and the debounce has passed.
+    fn write_view_if_moved(&mut self, app: &mut App, now: Instant) {
         let position = Position::of(app);
         if position == self.written {
             self.moved_at = None;
@@ -141,6 +196,24 @@ impl SessionSync {
         self.session.load_table().map(Some)
     }
 
+    /// The log if `comments.jsonl` changed since the last look, `None` if
+    /// not. No log is an empty one. A failed read isn't recorded as seen, so
+    /// the next tick tries again: nothing in the log can fail to parse (bad
+    /// lines are skipped), so an error here is IO, and it may clear up.
+    ///
+    /// The fingerprint is still read first. An append landing between the two
+    /// is in the log but not in `comments_seen`, so the next tick reads the
+    /// log again, which is harmless.
+    fn changed_comments(&mut self) -> anyhow::Result<Option<Log>> {
+        let fingerprint = self.session.comments_fingerprint()?;
+        if fingerprint == self.comments_seen {
+            return Ok(None);
+        }
+        let log = self.session.read_log()?;
+        self.comments_seen = fingerprint;
+        Ok(Some(log))
+    }
+
     /// Write `view.json` for `position`. An error goes to the status line and
     /// isn't retried until the cursor moves again: the position is advisory,
     /// and a full disk shouldn't put up a message every 100ms.
@@ -173,9 +246,11 @@ fn is_not_found(error: &anyhow::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::comments::{self, Event};
     use crate::session::Sessions;
     use crate::table::Table;
     use crate::viewer::app::Cursor;
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::fs::{self, File};
     use std::path::PathBuf;
 
@@ -460,5 +535,168 @@ mod tests {
         let message = fixture.app.message.as_ref().unwrap();
         assert!(message.text.starts_with("view.json: "), "{}", message.text);
         assert!(!message.text.contains('/'), "no path: {}", message.text);
+    }
+
+    /// One comment on row `a`'s `n`, the way the agent would append it.
+    fn agent_comment(id: &str) -> Event {
+        comments::parse_log(&format!(
+            r#"{{"op":"add","id":"{id}","author":"agent","row_id":"a","column":"n","text":"look","ts":"2026-10-28T19:03:00Z"}}"#
+        ))
+        .events
+        .remove(0)
+    }
+
+    impl Fixture {
+        /// The session through a second handle: the agent's side.
+        fn other_side(&self) -> Session {
+            self.sessions.open(&self.id).unwrap()
+        }
+
+        fn comments_path(&self) -> PathBuf {
+            self.view_path.with_file_name(COMMENTS_FILE)
+        }
+
+        fn message(&self) -> Option<&str> {
+            self.app
+                .message
+                .as_ref()
+                .map(|message| message.text.as_str())
+        }
+    }
+
+    #[test]
+    fn with_no_log_a_tick_reads_nothing() {
+        let mut fixture = start(table());
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert!(
+            fixture.app.threads().is_empty(),
+            "{:?}",
+            fixture.app.threads()
+        );
+        assert_eq!(fixture.message(), None);
+    }
+
+    #[test]
+    fn the_agents_comments_show_up_on_the_next_tick() {
+        let mut fixture = start(table());
+        let now = Instant::now();
+        // No cursor movement: `write_view_if_moved` returns early, and the
+        // poll must run anyway.
+        fixture.sync.tick(&mut fixture.app, now);
+        fixture
+            .other_side()
+            .append_events(&[agent_comment("c1")])
+            .unwrap();
+        fixture.sync.tick(&mut fixture.app, now + MS_30);
+        assert_eq!(fixture.app.threads().len(), 1);
+        assert_eq!(fixture.app.threads()[0].id, "c1");
+
+        fixture
+            .other_side()
+            .append_events(&[agent_comment("c2")])
+            .unwrap();
+        fixture.sync.tick(&mut fixture.app, now + MS_150);
+        assert_eq!(fixture.app.threads().len(), 2);
+    }
+
+    #[test]
+    fn skipped_log_lines_are_reported() {
+        let mut fixture = start(table());
+        let good = comments::log_text(&[agent_comment("c1"), agent_comment("c2")]).unwrap();
+        let (first, second) = good.split_once('\n').unwrap();
+        fs::write(
+            fixture.comments_path(),
+            format!("{first}\nnot json\n{second}"),
+        )
+        .unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.threads().len(), 2);
+        assert_eq!(
+            fixture.message(),
+            Some("comments.jsonl: skipped lines that aren't events: 2")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_log_that_cant_be_read_is_retried_every_tick() {
+        let mut fixture = start(table());
+        // A directory stats fine, but reading it fails with `EISDIR`.
+        fs::create_dir(fixture.comments_path()).unwrap();
+        let expected = Some("comments.jsonl: Is a directory (os error 21)");
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.message(), expected);
+        fixture.app.message = None;
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.message(), expected, "retried");
+
+        // Moved out of the session (not deleted), and a real log in its place.
+        fs::rename(fixture.comments_path(), fixture.dir.path().join("moved")).unwrap();
+        fixture
+            .other_side()
+            .append_events(&[agent_comment("c1")])
+            .unwrap();
+        fixture.app.message = None;
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.threads().len(), 1);
+        assert_eq!(fixture.message(), None);
+    }
+
+    /// `c`, `hi`, Enter: a comment on the cursor cell (row `a`, column `id`).
+    fn type_comment(app: &mut App) {
+        for code in [
+            KeyCode::Char('c'),
+            KeyCode::Char('h'),
+            KeyCode::Char('i'),
+            KeyCode::Enter,
+        ] {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+    }
+
+    #[test]
+    fn a_typed_comment_is_written_and_read_back_on_one_tick() {
+        let mut fixture = start(table());
+        type_comment(&mut fixture.app);
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        let log = fixture.other_side().read_log().unwrap();
+        assert_eq!(log.events.len(), 1);
+        assert_eq!(fixture.app.threads().len(), 1);
+        assert_eq!(fixture.app.threads()[0].messages[0].text, "hi");
+        assert!(fixture.app.marker(0, 0).is_some());
+    }
+
+    #[test]
+    fn a_comment_on_a_removed_session_says_it_wasnt_saved() {
+        let mut fixture = start(table());
+        let dir = fixture.view_path.parent().unwrap().to_path_buf();
+        fixture.sessions.remove(fixture.other_side()).unwrap();
+        type_comment(&mut fixture.app);
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        let message = fixture.message().unwrap();
+        assert!(
+            message.starts_with("not saved: comments.jsonl: No such file"),
+            "{message}"
+        );
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn a_skipped_line_is_reported_once() {
+        let mut fixture = start(table());
+        fs::write(fixture.comments_path(), "not json\n").unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(
+            fixture.message(),
+            Some("comments.jsonl: skipped lines that aren't events: 1")
+        );
+        fixture.app.message = None;
+        fixture
+            .other_side()
+            .append_events(&[agent_comment("c1")])
+            .unwrap();
+        fixture.sync.tick(&mut fixture.app, Instant::now());
+        assert_eq!(fixture.app.threads().len(), 1);
+        assert_eq!(fixture.message(), None, "the same bad line, reported again");
     }
 }

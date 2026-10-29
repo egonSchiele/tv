@@ -3,6 +3,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 
+mod comments;
 mod files;
 mod session;
 #[cfg(test)]
@@ -11,7 +12,7 @@ mod table;
 mod time;
 mod viewer;
 
-use session::Sessions;
+use session::{COMMENTS_FILE, Sessions};
 use table::{Table, single_line};
 use viewer::layout::{Align, display_width, fit};
 
@@ -168,6 +169,16 @@ fn title_text(title: Option<&str>) -> String {
     title.map_or_else(|| "(untitled)".to_string(), single_line)
 }
 
+/// A count in `ls`: `-` for none, like VIEWER's `-`, so a session that
+/// needs you stands out.
+fn count_text(count: usize) -> String {
+    if count == 0 {
+        "-".to_string()
+    } else {
+        count.to_string()
+    }
+}
+
 /// `tv ls`: one row per session, newest first.
 fn ls(sessions: &Sessions) -> anyhow::Result<()> {
     let list = sessions.list()?;
@@ -178,7 +189,7 @@ fn ls(sessions: &Sessions) -> anyhow::Result<()> {
     // TITLE goes last: it's the only free text, so a long one wraps its own
     // line instead of pushing the other columns off every row.
     let mut rows = vec![
-        ["ID", "ROWS×COLS", "VIEWER", "MODIFIED", "TITLE"]
+        ["ID", "ROWS×COLS", "VIEWER", "AWAITING", "MODIFIED", "TITLE"]
             .map(String::from)
             .to_vec(),
     ];
@@ -193,6 +204,7 @@ fn ls(sessions: &Sessions) -> anyhow::Result<()> {
                 summary.id,
                 format!("{}×{}", summary.rows, summary.columns),
                 viewer.to_string(),
+                count_text(summary.awaiting_reply),
                 time::rfc3339(summary.modified_at),
                 title_text(summary.title.as_deref()),
             ],
@@ -200,6 +212,7 @@ fn ls(sessions: &Sessions) -> anyhow::Result<()> {
                 session.id().to_string(),
                 "?".to_string(),
                 viewer.to_string(),
+                "?".to_string(),
                 session
                     .modified_at()
                     .map_or_else(|_| "?".to_string(), time::rfc3339),
@@ -273,9 +286,16 @@ fn rm(sessions: &Sessions, ids: &[String], force: bool) -> anyhow::Result<()> {
 /// because there a default path makes clobbering easy; neither applies to a
 /// command with an explicit output path.
 fn save(sessions: &Sessions, id: &str, path: &str) -> anyhow::Result<()> {
-    let table = sessions.open(id)?.load_table()?;
+    let session = sessions.open(id)?;
+    let mut table = session.load_table()?;
+    let log = session.read_log()?;
+    table.comments = comments::threads(&log.events, &table);
     table.save(&files::expand_tilde(path))?;
     println!("wrote {} rows to {path}", table.rows.len());
+    // Not an error, so stdout, next to the line above.
+    if let Some(warning) = log.warning() {
+        println!("{COMMENTS_FILE}: {warning}");
+    }
     Ok(())
 }
 

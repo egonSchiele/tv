@@ -1,5 +1,7 @@
 //! Drawing. Pure: takes `&App` and draws a frame, never changes state.
 
+use std::iter;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
@@ -7,8 +9,12 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use serde_json::Value;
 
-use super::app::{App, Binding, ColonCommand, GRID_BINDINGS, Mode, RECORD_BINDINGS, key_label};
+use super::app::{
+    App, Binding, ColonCommand, CommandLine, DETAIL_BINDINGS, GRID_BINDINGS, Marker, Mode,
+    RECORD_BINDINGS, key_label,
+};
 use super::layout::{self, Align, VisibleColumn};
+use crate::comments::{Author, Message, Thread};
 use crate::table::{ColumnType, cell_text, single_line};
 
 /// Where each part of the screen goes.
@@ -74,7 +80,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     match app.mode {
         Mode::Help => draw_help(frame, screen),
-        Mode::Detail => draw_detail(frame, app, screen),
+        // The delete prompt is in the status line, over the popup.
+        Mode::Detail | Mode::ConfirmDelete(_) => draw_detail(frame, app, screen),
         _ => {}
     }
 }
@@ -82,12 +89,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
 fn header_line(app: &App, visible: &[VisibleColumn], width: u16) -> Line<'static> {
     let columns = &app.table().columns;
     let header = app.theme.header;
-    grid_line(visible, width, Style::new(), |col| {
-        (
-            columns[col].display_name(),
-            align(columns[col].kind),
-            header,
-        )
+    grid_line(visible, width, Style::new(), |col| GridCell {
+        text: columns[col].display_name(),
+        align: align(columns[col].kind),
+        style: header,
+        marker: None,
     })
 }
 
@@ -107,8 +113,15 @@ fn body_lines(app: &App, visible: &[VisibleColumn], area: Rect) -> Vec<Line<'sta
             };
             grid_line(visible, width, row_style, |col| {
                 let column = &table.columns[col];
-                let text = cell_text(table.cell(row, &column.name));
-                (text, align(column.kind), cell_style(app, row, col))
+                GridCell {
+                    text: cell_text(table.cell(row, &column.name)),
+                    align: align(column.kind),
+                    style: cell_style(app, row, col),
+                    marker: app.marker(row, col).map(|marker| match marker {
+                        Marker::Awaiting => app.theme.awaiting,
+                        Marker::Replied => app.theme.replied,
+                    }),
+                }
             })
         })
         .collect()
@@ -118,7 +131,8 @@ fn body_lines(app: &App, visible: &[VisibleColumn], area: Rect) -> Vec<Line<'sta
 /// brightest, then the cursor's row and column, then everything else. A cell
 /// the last reload changed is highlighted over its row and column, but not
 /// on the cursor: that one stays reversed, the brightest thing on screen.
-/// Comment markers get added here.
+/// Comment markers aren't part of this: `grid_line` draws them in the right
+/// padding.
 fn cell_style(app: &App, row: usize, col: usize) -> Style {
     let theme = &app.theme;
     let cursor = app.cursor;
@@ -151,6 +165,18 @@ fn align(kind: Option<ColumnType>) -> Align {
     }
 }
 
+/// Marks a cell with comment threads, in the cell's right padding.
+const MARKER: &str = "▸";
+
+/// What `grid_line` draws in one column.
+struct GridCell {
+    text: String,
+    align: Align,
+    style: Style,
+    /// The comment marker's style, if the cell has threads.
+    marker: Option<Style>,
+}
+
 /// The only code that lays out a grid row: each visible column's text is
 /// sized with `layout::fit`, padded, and followed by the separator. The header
 /// and body rows both go through here; `cell` says what goes in each column.
@@ -162,16 +188,29 @@ fn grid_line(
     visible: &[VisibleColumn],
     width: u16,
     row_style: Style,
-    cell: impl Fn(usize) -> (String, Align, Style),
+    cell: impl Fn(usize) -> GridCell,
 ) -> Line<'static> {
     let padding = " ".repeat(usize::from(layout::CELL_PADDING));
     let spans: Vec<Span> = visible
         .iter()
         .flat_map(|column| {
-            let (text, align, style) = cell(column.index);
+            let GridCell {
+                text,
+                align,
+                style,
+                marker,
+            } = cell(column.index);
             let sized = layout::fit(&text, column.width, align);
+            // The marker takes the right padding, so it never hides text or
+            // changes a column's width. With `CELL_PADDING` at 1, that's all
+            // of the padding.
+            let right = match marker {
+                Some(marker) => Span::styled(MARKER, style.patch(marker)),
+                None => Span::styled(padding.clone(), style),
+            };
             [
-                Span::styled(format!("{padding}{sized}{padding}"), style),
+                Span::styled(format!("{padding}{sized}"), style),
+                right,
                 Span::styled(layout::SEPARATOR, row_style),
             ]
         })
@@ -192,21 +231,42 @@ fn divider(width: u16) -> String {
 /// showing. The full list is in the help overlay.
 const STATUS_HINTS: &str = "? help  : command  q quit";
 
-/// The status line, or the `:` line while a command is being typed.
+/// Asked in the status line before `y` deletes a cell's threads.
+const DELETE_PROMPT: &str = " delete this cell's comments? y/n";
+
+/// What the status row shows in each mode: an input line while one is being
+/// typed, the delete prompt, or the status line.
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    if let Mode::Command(line) = &app.mode {
-        frame.render_widget(Line::from(format!(":{}", line.text)), area);
-        // Put the terminal's cursor where typing goes: after the `:` and the
-        // text before the cursor, measured in cells, not bytes.
-        let offset = 1 + layout::display_width(line.before_cursor());
-        let x = area
-            .x
-            .saturating_add(offset)
-            .min(area.right().saturating_sub(1));
-        frame.set_cursor_position((x, area.y));
-        return;
+    match &app.mode {
+        Mode::Command(line) => draw_input(frame, area, ":", line),
+        Mode::Comment(input) => draw_input(frame, area, "comment: ", &input.line),
+        Mode::ConfirmDelete(_) => frame.render_widget(Line::from(DELETE_PROMPT), area),
+        _ => frame.render_widget(status_line(app), area),
     }
-    frame.render_widget(status_line(app), area);
+}
+
+/// An input line: `prefix`, then the text, with the terminal's cursor where
+/// typing goes, measured in cells, not bytes. When the text before the cursor
+/// doesn't fit, characters are dropped from the front until it does, so what
+/// you're typing stays on screen.
+fn draw_input(frame: &mut Frame, area: Rect, prefix: &str, line: &CommandLine) {
+    let prefix_width = layout::display_width(prefix);
+    // Room for the text before the cursor, leaving a cell for the cursor.
+    let room = area.width.saturating_sub(prefix_width.saturating_add(1));
+    let before = line.before_cursor();
+    let start = before
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain([before.len()])
+        .find(|&index| layout::display_width(&before[index..]) <= room)
+        .unwrap_or(before.len());
+    frame.render_widget(Line::from(format!("{prefix}{}", &line.text[start..])), area);
+    let offset = prefix_width.saturating_add(layout::display_width(&before[start..]));
+    let x = area
+        .x
+        .saturating_add(offset)
+        .min(area.right().saturating_sub(1));
+    frame.set_cursor_position((x, area.y));
 }
 
 /// Status-line hints in the record view.
@@ -234,14 +294,34 @@ fn status_line(app: &App) -> Line<'static> {
         (None, Some(error)) => format!("reload failed: {error}"),
         (None, None) => hints.to_string(),
     };
-    Line::from(format!(" {position}  ·  {after}"))
+    let mut parts = vec![position];
+    parts.extend(comment_counts(app));
+    parts.push(after);
+    Line::from(format!(" {}", parts.join("  ·  ")))
+}
+
+/// `1 awaiting reply` and `1 orphaned` for the status line, leaving out a
+/// zero.
+fn comment_counts(app: &App) -> Vec<String> {
+    let threads = app.threads();
+    let awaiting = threads
+        .iter()
+        .filter(|thread| thread.awaiting_reply)
+        .count();
+    let orphaned = threads.iter().filter(|thread| thread.orphaned).count();
+    [(awaiting, "awaiting reply"), (orphaned, "orphaned")]
+        .into_iter()
+        .filter(|&(count, _)| count > 0)
+        .map(|(count, what)| format!("{count} {what}"))
+        .collect()
 }
 
 /// A centered box listing every key and `:` command. It's built from the
 /// bindings tables and `ColonCommand::HELP`, so it always matches what works.
 fn draw_help(frame: &mut Frame, screen: Rect) {
-    let sections: [(&str, Vec<(String, &str)>); 3] = [
+    let sections: [(&str, Vec<(String, &str)>); 4] = [
         ("Grid", binding_rows(GRID_BINDINGS)),
+        ("Cell detail", binding_rows(DETAIL_BINDINGS)),
         ("Record view", binding_rows(RECORD_BINDINGS)),
         (
             "Commands",
@@ -299,7 +379,8 @@ fn binding_rows<A>(bindings: &[Binding<A>]) -> Vec<(String, &'static str)> {
 }
 
 /// The cursor cell's full value in a popup: strings as written (newlines
-/// kept), nested JSON pretty-printed, null dimmed.
+/// kept), nested JSON pretty-printed, null dimmed. Under it, the cell's
+/// comment threads.
 fn draw_detail(frame: &mut Frame, app: &App, screen: Rect) {
     let table = app.table();
     let (row, column) = (app.cursor.row, &table.columns[app.cursor.col]);
@@ -328,17 +409,78 @@ fn draw_detail(frame: &mut Frame, app: &App, screen: Rect) {
     frame.render_widget(Clear, popup);
     frame.render_widget(block, popup);
 
-    // The bottom two lines are for the cell's comments (ADI-224).
+    // Without threads the comments take two lines. With them, the value and
+    // the comments share the popup in proportion to the rows each wraps to,
+    // so a short thread leaves a long value room. The counts assume wrapping
+    // at any character; wrapping at words can need a row more, which matters
+    // only when the popup is nearly full.
+    let threads = app.cell_threads();
+    let comments = comment_lines(&threads);
+    let width = usize::from(inner.width.max(1));
+    let share = |lines: &[Line]| {
+        let rows: usize = lines
+            .iter()
+            .map(|line| line.width().div_ceil(width).max(1))
+            .sum();
+        Constraint::Fill(u16::try_from(rows).unwrap_or(u16::MAX))
+    };
+    let comments_height = if threads.is_empty() {
+        Constraint::Length(2)
+    } else {
+        share(&comments)
+    };
     let [value_area, comments_area] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(2)]).areas(inner);
+        Layout::vertical([share(&value.lines), comments_height]).areas(inner);
     frame.render_widget(Paragraph::new(value).wrap(Wrap { trim: false }), value_area);
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::styled("Comments", Style::new().add_modifier(Modifier::BOLD)),
-            Line::from("none yet").dim(),
-        ]),
+        Paragraph::new(comments).wrap(Wrap { trim: false }),
         comments_area,
     );
+}
+
+/// The popup's comments: a heading, then every message of every thread, with
+/// a blank line between threads. `none yet` without any.
+fn comment_lines(threads: &[&Thread]) -> Vec<Line<'static>> {
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    if threads.is_empty() {
+        return vec![Line::styled("Comments", bold), Line::from("none yet").dim()];
+    }
+    let heading = Line::from(vec![
+        Span::styled("Comments", bold),
+        Span::raw("  ·  c reply  ·  d delete"),
+    ]);
+    let mut lines = vec![heading];
+    for (index, thread) in threads.iter().enumerate() {
+        if index > 0 {
+            lines.push(Line::from(""));
+        }
+        lines.extend(thread.messages.iter().flat_map(message_lines));
+    }
+    lines
+}
+
+/// One message: the author in bold, two spaces, then the text. ratatui drops
+/// `\n` inside a `Line` (it drops every control character, so comment text
+/// can't send escape sequences to the terminal), so a multi-line message is
+/// split here: its first line goes after the author, the rest underneath.
+/// Tabs become spaces, as in the value.
+fn message_lines(message: &Message) -> Vec<Line<'static>> {
+    let author = match message.author {
+        Author::User => "user",
+        Author::Agent => "agent",
+    };
+    let text = message.text.replace('\t', "    ");
+    let mut text_lines = text.split('\n');
+    let first = Line::from(vec![
+        Span::styled(
+            format!("{author}  "),
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(text_lines.next().unwrap_or_default().to_string()),
+    ]);
+    iter::once(first)
+        .chain(text_lines.map(|rest| Line::from(rest.to_string())))
+        .collect()
 }
 
 /// The cursor's row as one line per field: name, `│`, value. The cursor's
@@ -420,6 +562,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
+    use crate::comments;
     use crate::snapshot::{assert_snapshot, buffer_view};
     use crate::table::Table;
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -545,7 +688,9 @@ mod tests {
     fn help_overlay() {
         let mut app = prs();
         app.mode = Mode::Help;
-        assert_snapshot("help", &render_text(&mut app, 60, 36));
+        // Tall enough for every row: `popup_area` shrinks the box to the
+        // screen, so a short one would cut off the end without failing.
+        assert_snapshot("help", &render_text(&mut app, 60, 44));
     }
 
     #[test]
@@ -625,11 +770,21 @@ mod tests {
     fn tiny_terminal_does_not_panic() {
         for (width, height) in [(0, 0), (1, 1), (3, 2), (10, 3)] {
             render(&mut prs(), width, height);
-            for mode in [Mode::Help, Mode::Detail, Mode::Record] {
+            for mode in [
+                Mode::Help,
+                Mode::Detail,
+                Mode::Record,
+                Mode::ConfirmDelete(vec!["c1".to_string()]),
+            ] {
                 let mut app = prs();
                 app.mode = mode;
                 render(&mut app, width, height);
             }
+            // `CommentInput`'s fields are private, so type `c` instead.
+            let mut app = prs();
+            app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+            assert!(matches!(app.mode, Mode::Comment(_)));
+            render(&mut app, width, height);
         }
     }
 
@@ -662,5 +817,155 @@ mod tests {
         app.set_table(Table::parse("[{}]").unwrap(), Instant::now());
         render(&mut app, 60, 10);
         assert_eq!(app.mode, Mode::Grid);
+    }
+
+    fn press_keys(app: &mut App, codes: impl IntoIterator<Item = KeyCode>) {
+        for code in codes {
+            app.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+    }
+
+    /// `prs()` with three threads: one awaiting a reply on 404's title, one
+    /// the agent answered on 409's author, and an orphaned one the agent had
+    /// the last word on, so only one is awaiting.
+    fn prs_with_comments() -> App {
+        let mut app = prs();
+        let log = [
+            r#"{"op":"add","id":"c1","author":"user","row_id":"404","column":"title","text":"Why is this still open?","ts":"2026-10-29T10:00:00Z"}"#,
+            r#"{"op":"add","id":"c2","author":"user","row_id":"409","column":"author","text":"Who reviews this?","ts":"2026-10-29T10:01:00Z"}"#,
+            r#"{"op":"add","id":"c3","author":"agent","reply_to":"c2","text":"Sam, tomorrow.","ts":"2026-10-29T10:02:00Z"}"#,
+            r#"{"op":"add","id":"c4","author":"agent","row_id":"1","column":"title","text":"Row 1 is gone","ts":"2026-10-29T10:03:00Z"}"#,
+        ];
+        app.set_events(comments::parse_log(&log.join("\n")).events);
+        app
+    }
+
+    /// Where the `▸` markers are on screen.
+    fn markers(terminal: &Terminal<TestBackend>) -> Vec<(u16, u16)> {
+        let buffer = terminal.backend().buffer();
+        let area = buffer.area;
+        (area.top()..area.bottom())
+            .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
+            .filter(|&(x, y)| buffer[(x, y)].symbol() == "▸")
+            .collect()
+    }
+
+    #[test]
+    fn comment_markers() {
+        let mut app = prs_with_comments();
+        assert_snapshot("comment_markers", &render_text(&mut app, 100, 8));
+        let status = render_text(&mut app, 100, 8);
+        assert!(
+            status.contains("1 awaiting reply  ·  1 orphaned"),
+            "{status}"
+        );
+    }
+
+    #[test]
+    fn comment_markers_mono() {
+        let mut app = prs_with_comments();
+        app.theme = Theme::mono();
+        assert_snapshot("comment_markers_mono", &render_text(&mut app, 100, 8));
+        // The replied marker on 409's author sits on the bold cursor line,
+        // and must still read as faint.
+        let terminal = render(&mut app, 100, 8);
+        let replied = markers(&terminal)
+            .into_iter()
+            .find(|&(_, y)| y == 2)
+            .unwrap();
+        let modifier = terminal.backend().buffer()[replied].modifier;
+        assert!(modifier.contains(Modifier::DIM), "{modifier:?}");
+        assert!(!modifier.contains(Modifier::BOLD), "{modifier:?}");
+    }
+
+    #[test]
+    fn a_marker_on_a_null_cell_isnt_dimmed() {
+        for theme in [Theme::color(), Theme::mono()] {
+            let mut app = app(r#"{"key": "id", "rows": [{"id": "a", "note": null}, {"id": "b"}]}"#);
+            app.theme = theme;
+            let log = r#"{"op":"add","id":"c1","author":"user","row_id":"a","column":"note","text":"why blank?","ts":"t"}"#;
+            app.set_events(comments::parse_log(log).events);
+            let terminal = render(&mut app, 40, 8);
+            let found = markers(&terminal);
+            assert_eq!(found.len(), 1, "{found:?}");
+            let modifier = terminal.backend().buffer()[found[0]].modifier;
+            assert!(!modifier.contains(Modifier::DIM), "{modifier:?}");
+        }
+    }
+
+    #[test]
+    fn comment_detail() {
+        let mut app = prs_with_comments();
+        let log = [
+            r#"{"op":"add","id":"c1","author":"user","row_id":"404","column":"title","text":"Why is this still open?","ts":"2026-10-29T10:00:00Z"}"#,
+            r#"{"op":"add","id":"c5","author":"agent","reply_to":"c1","text":"Waiting on CI.\nShould be green by noon.","ts":"2026-10-29T10:05:00Z"}"#,
+        ];
+        app.set_events(comments::parse_log(&log.join("\n")).events);
+        app.cursor = Cursor { row: 1, col: 1 };
+        press_keys(&mut app, [KeyCode::Enter]);
+        assert_eq!(app.mode, Mode::Detail);
+        assert_snapshot("comment_detail", &render_text(&mut app, 70, 20));
+    }
+
+    #[test]
+    fn comment_input() {
+        let mut app = prs();
+        press_keys(&mut app, ['c', 'h', 'i'].map(KeyCode::Char));
+        let mut terminal = render(&mut app, 50, 8);
+        assert_snapshot("comment_input", &buffer_view(terminal.backend().buffer()));
+        // After `comment: hi`: column 1 (border) + 11, on the status row.
+        terminal.backend_mut().assert_cursor_position((12, 6));
+    }
+
+    #[test]
+    fn a_long_comment_scrolls_to_the_end() {
+        let mut app = prs();
+        press_keys(&mut app, [KeyCode::Char('c')]);
+        let text: String = (0..100)
+            .map(|index| char::from(b'a' + index % 26))
+            .collect();
+        press_keys(&mut app, text.chars().map(KeyCode::Char));
+        let mut terminal = render(&mut app, 50, 8);
+        let status = buffer_view(terminal.backend().buffer());
+        let status_row = status.lines().nth(6).unwrap();
+        assert!(status_row.contains(&text[90..]), "{status_row}");
+        assert!(status_row.contains("comment: "), "{status_row}");
+        // The cursor is just after the last character, inside the border.
+        let cursor = terminal.get_cursor_position().unwrap();
+        assert_eq!(cursor.y, 6);
+        assert!(cursor.x < 49, "{cursor:?}");
+    }
+
+    #[test]
+    fn comment_delete_prompt() {
+        let mut app = prs_with_comments();
+        app.cursor = Cursor { row: 1, col: 1 };
+        press_keys(&mut app, [KeyCode::Enter, KeyCode::Char('d')]);
+        assert!(matches!(app.mode, Mode::ConfirmDelete(_)), "{:?}", app.mode);
+        assert_snapshot("comment_delete_prompt", &render_text(&mut app, 70, 12));
+    }
+
+    #[test]
+    fn a_reload_to_an_empty_table_in_the_delete_prompt_does_not_panic() {
+        let mut app = prs_with_comments();
+        app.cursor = Cursor { row: 1, col: 1 };
+        press_keys(&mut app, [KeyCode::Enter, KeyCode::Char('d')]);
+        app.set_table(Table::parse("[{}]").unwrap(), Instant::now());
+        render(&mut app, 60, 10);
+        assert_eq!(app.mode, Mode::Grid);
+    }
+
+    #[test]
+    fn a_short_thread_leaves_the_value_room() {
+        let body: Vec<String> = (1..=12).map(|n| format!("line {n}")).collect();
+        let json = serde_json::json!({"key": "id", "rows": [{"id": "a", "body": body.join("\n")}]});
+        let mut app = app(&json.to_string());
+        let log = r#"{"op":"add","id":"c1","author":"user","row_id":"a","column":"body","text":"why?","ts":"t"}"#;
+        app.set_events(comments::parse_log(log).events);
+        app.cursor = Cursor { row: 0, col: 1 };
+        press_keys(&mut app, [KeyCode::Enter]);
+        let screen = render_text(&mut app, 80, 24);
+        assert!(screen.contains("user  why?"), "{screen}");
+        assert!(screen.contains("line 10"), "{screen}");
     }
 }

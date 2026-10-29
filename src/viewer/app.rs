@@ -1,6 +1,6 @@
 //! Viewer state. All mutation happens here; render only reads it.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use super::diff;
 use super::layout::{self, VisibleColumn};
 use super::theme::Theme;
+use crate::comments::{self, Author, Event, Thread};
 use crate::files;
 use crate::table::Table;
 
@@ -102,6 +103,9 @@ pub enum Action {
     CommandLine,
     Detail,
     Record,
+    Comment,
+    NextComment,
+    PreviousComment,
     Save,
     Quit,
 }
@@ -145,6 +149,36 @@ pub const RECORD_BINDINGS: &[Binding<RecordAction>] = &[
     },
 ];
 
+/// Keys in the cell popup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailAction {
+    Close,
+    Comment,
+    Delete,
+}
+
+pub const DETAIL_BINDINGS: &[Binding<DetailAction>] = &[
+    Binding {
+        keys: &[
+            Key::plain(KeyCode::Esc),
+            Key::plain(KeyCode::Enter),
+            Key::char('q'),
+        ],
+        action: DetailAction::Close,
+        help: "close",
+    },
+    Binding {
+        keys: &[Key::char('c')],
+        action: DetailAction::Comment,
+        help: "comment on this cell",
+    },
+    Binding {
+        keys: &[Key::char('d')],
+        action: DetailAction::Delete,
+        help: "delete this cell's comments",
+    },
+];
+
 /// What the keyboard is driving right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
@@ -155,6 +189,28 @@ pub enum Mode {
     Detail,
     /// The cursor's row as a list of fields.
     Record,
+    /// Typing a comment on a cell.
+    Comment(CommentInput),
+    /// The cell popup, asking whether to delete these threads (their IDs).
+    ConfirmDelete(Vec<String>),
+}
+
+/// A comment being typed, and the cell it's for: named by row ID and column,
+/// so a reload while typing can't move it to another cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommentInput {
+    pub line: CommandLine,
+    row_id: String,
+    column: String,
+}
+
+/// How a cell's comment marker is colored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Marker {
+    /// Some thread on the cell is awaiting a reply.
+    Awaiting,
+    /// The agent replied last on every thread on the cell.
+    Replied,
 }
 
 /// The `:` line being typed. `cursor` counts characters, not bytes, so typing
@@ -209,6 +265,23 @@ impl CommandLine {
 
     fn end(&mut self) {
         self.cursor = self.text.chars().count();
+    }
+
+    /// Apply an editing key. Both input lines (`:` and `c`) use this, so they
+    /// can't start behaving differently. `Enter` and `Esc` are the caller's;
+    /// other keys it doesn't know are ignored.
+    fn edit(&mut self, key: &KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Backspace => self.backspace(),
+            KeyCode::Left => self.left(),
+            KeyCode::Right => self.right(),
+            KeyCode::Home => self.cursor = 0,
+            KeyCode::End => self.end(),
+            KeyCode::Char('u') if ctrl => *self = CommandLine::default(),
+            KeyCode::Char(character) if !ctrl => self.insert(character),
+            _ => {}
+        }
     }
 }
 
@@ -346,6 +419,21 @@ pub const GRID_BINDINGS: &[Binding<Action>] = &[
         help: "record view",
     },
     Binding {
+        keys: &[Key::char('c')],
+        action: Action::Comment,
+        help: "comment on this cell",
+    },
+    Binding {
+        keys: &[Key::char(']')],
+        action: Action::NextComment,
+        help: "next comment",
+    },
+    Binding {
+        keys: &[Key::char('[')],
+        action: Action::PreviousComment,
+        help: "previous comment",
+    },
+    Binding {
         keys: &[Key::char('s')],
         action: Action::Save,
         help: "save (opens :w with the default path)",
@@ -392,6 +480,15 @@ pub struct App {
     /// status line shows it whenever no message is up.
     pub reload_error: Option<String>,
     highlight: Option<Highlight>, // set only through set_table
+    /// The session's comment log as of the last poll, and the threads folded
+    /// from it against `table`. `refold` keeps `threads` in step with both.
+    events: Vec<Event>,
+    threads: Vec<Thread>,
+    /// The threads on each cell, as indices into `threads`. Orphaned threads
+    /// have no cell, so they aren't here.
+    thread_cells: HashMap<Cursor, Vec<usize>>,
+    /// Comment events from the keyboard, for `SessionSync` to write.
+    pending: Vec<Event>,
     /// The current file in vim's sense: where the last successful save went.
     /// It starts as `None` even after `tv file.json`, so `:w` and `s` default
     /// to `./<title-slug>.json` as the spec says. That's deliberate.
@@ -421,6 +518,10 @@ impl App {
             message: None,
             reload_error: None,
             highlight: None,
+            events: Vec::new(),
+            threads: Vec::new(),
+            thread_cells: HashMap::new(),
+            pending: Vec::new(),
             save_path: None,
             should_quit: false,
         }
@@ -445,11 +546,74 @@ impl App {
             until: now + HIGHLIGHT_DURATION,
         });
         self.reload_error = None;
+        self.refold();
         self.move_to(cursor.row, cursor.col); // clamps and scrolls into view
-        // Detail and Record need a cell under the cursor, the same check
-        // `open_cell_view` makes before opening them.
-        if matches!(self.mode, Mode::Detail | Mode::Record) && !self.has_cell() {
+        // Detail, Record and ConfirmDelete need a cell under the cursor, the
+        // same check `open_cell_view` makes before opening them. Comment
+        // knows its own cell.
+        let needs_cell = matches!(
+            self.mode,
+            Mode::Detail | Mode::Record | Mode::ConfirmDelete(_)
+        );
+        if needs_cell && !self.has_cell() {
             self.mode = Mode::Grid;
+        }
+    }
+
+    /// Replace the comment log after a poll, and refold.
+    pub fn set_events(&mut self, events: Vec<Event>) {
+        self.events = events;
+        self.refold();
+    }
+
+    /// The session's comment threads, folded against the current table.
+    pub fn threads(&self) -> &[Thread] {
+        &self.threads
+    }
+
+    /// The comment marker for a cell, if it has threads.
+    pub fn marker(&self, row: usize, col: usize) -> Option<Marker> {
+        let indices = self.thread_cells.get(&Cursor { row, col })?;
+        let awaiting = indices
+            .iter()
+            .any(|&index| self.threads[index].awaiting_reply);
+        Some(if awaiting {
+            Marker::Awaiting
+        } else {
+            Marker::Replied
+        })
+    }
+
+    /// The cursor cell's threads, in log order, for the cell popup.
+    pub fn cell_threads(&self) -> Vec<&Thread> {
+        self.thread_cells
+            .get(&self.cursor)
+            .into_iter()
+            .flatten()
+            .map(|&index| &self.threads[index])
+            .collect()
+    }
+
+    /// The comment events queued since the last call, for `SessionSync`.
+    pub(super) fn take_pending(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// Fold `events` against `table`, and index the threads by cell.
+    /// `set_events` and `set_table` both call it: a reload can orphan a
+    /// thread, move its cell, or change its `value`. Where a thread's cell is
+    /// comes from `comments::threads` (`Thread.cell`), so the markers and the
+    /// `orphaned` flag can't disagree.
+    fn refold(&mut self) {
+        self.threads = comments::threads(&self.events, &self.table);
+        self.thread_cells.clear();
+        for (index, thread) in self.threads.iter().enumerate() {
+            if let Some((row, col)) = thread.cell {
+                self.thread_cells
+                    .entry(Cursor { row, col })
+                    .or_default()
+                    .push(index);
+            }
         }
     }
 
@@ -526,32 +690,39 @@ impl App {
                 }
             }
             Mode::Help => self.mode = Mode::Grid, // any key closes it
-            Mode::Command(line) => {
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                match key.code {
-                    KeyCode::Esc => self.mode = Mode::Grid,
-                    KeyCode::Enter => {
-                        let text = line.text.trim().to_string();
-                        self.mode = Mode::Grid;
-                        if !text.is_empty() {
-                            let Ok(command) = text.parse();
-                            self.run_command(command);
-                        }
+            Mode::Command(line) => match key.code {
+                KeyCode::Esc => self.mode = Mode::Grid,
+                KeyCode::Enter => {
+                    let text = line.text.trim().to_string();
+                    self.mode = Mode::Grid;
+                    if !text.is_empty() {
+                        let Ok(command) = text.parse();
+                        self.run_command(command);
                     }
-                    KeyCode::Backspace => line.backspace(),
-                    KeyCode::Left => line.left(),
-                    KeyCode::Right => line.right(),
-                    KeyCode::Home => line.cursor = 0,
-                    KeyCode::End => line.end(),
-                    KeyCode::Char('u') if ctrl => *line = CommandLine::default(),
-                    KeyCode::Char(character) if !ctrl => line.insert(character),
-                    _ => {}
+                }
+                _ => line.edit(&key),
+            },
+            Mode::Comment(input) => match key.code {
+                KeyCode::Esc => self.mode = Mode::Grid,
+                KeyCode::Enter => {
+                    let input = input.clone();
+                    self.mode = Mode::Grid;
+                    self.send_comment(input);
+                }
+                _ => input.line.edit(&key),
+            },
+            Mode::Detail => {
+                if let Some(action) = lookup(DETAIL_BINDINGS, &key) {
+                    self.perform_in_detail(action);
                 }
             }
-            Mode::Detail => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
-                    self.mode = Mode::Grid;
+            // Only `y` deletes; any other key keeps the threads.
+            Mode::ConfirmDelete(ids) => {
+                if Key::char('y').matches(&key) {
+                    let deletes = std::mem::take(ids).into_iter().map(Event::delete);
+                    self.pending.extend(deletes);
                 }
+                self.mode = Mode::Detail;
             }
             Mode::Record => {
                 if let Some(action) = lookup(RECORD_BINDINGS, &key) {
@@ -578,14 +749,114 @@ impl App {
         }
     }
 
+    fn perform_in_detail(&mut self, action: DetailAction) {
+        match action {
+            DetailAction::Close => self.mode = Mode::Grid,
+            DetailAction::Comment => self.open_comment(),
+            DetailAction::Delete => {
+                let ids: Vec<String> = self
+                    .cell_threads()
+                    .iter()
+                    .map(|thread| thread.id.clone())
+                    .collect();
+                if ids.is_empty() {
+                    self.set_message("no comments on this cell".to_string());
+                } else {
+                    self.mode = Mode::ConfirmDelete(ids);
+                }
+            }
+        }
+    }
+
     /// Open a view of the cursor's cell or row, if there is one.
     fn open_cell_view(&mut self, mode: Mode) {
         if self.has_cell() {
             self.mode = mode;
-        } else if self.table.rows.is_empty() {
-            self.set_message("no rows".to_string());
         } else {
-            self.set_message("no columns".to_string());
+            self.set_message(self.no_cell_message().to_string());
+        }
+    }
+
+    /// Why there's no cell to open or comment on.
+    fn no_cell_message(&self) -> &'static str {
+        if self.table.rows.is_empty() {
+            "no rows"
+        } else {
+            "no columns"
+        }
+    }
+
+    /// Start typing a comment on the cursor cell, if there is one.
+    fn open_comment(&mut self) {
+        match (self.row_id(), self.column_name()) {
+            (Some(row_id), Some(column)) => {
+                self.mode = Mode::Comment(CommentInput {
+                    line: CommandLine::default(),
+                    row_id,
+                    column,
+                });
+            }
+            _ => self.set_message(self.no_cell_message().to_string()),
+        }
+    }
+
+    /// Queue the comment typed in `input` for `SessionSync` to write: a reply
+    /// to the newest thread on its cell, or a new thread. That's decided now,
+    /// not when `c` was pressed, so a thread the agent started meanwhile is
+    /// joined. Empty text sends nothing.
+    fn send_comment(&mut self, input: CommentInput) {
+        let text = input.line.text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        // The queue too, so this doesn't depend on `pending` being written
+        // before the next key.
+        let id = comments::new_id(self.events.iter().chain(&self.pending));
+        let thread = self
+            .threads
+            .iter()
+            .rev()
+            .find(|thread| thread.row_id == input.row_id && thread.column == input.column);
+        let event = match thread {
+            Some(thread) => Event::reply(id, Author::User, thread.id.clone(), text),
+            None => Event::comment(id, Author::User, input.row_id, input.column, text),
+        };
+        self.pending.push(event);
+    }
+
+    /// Move to the next (or previous) cell with a thread, in reading order:
+    /// by row, then by screen position, so the pinned key column comes first.
+    /// Wraps around at either end.
+    fn jump_to_comment(&mut self, forward: bool) {
+        let order = self.column_order();
+        let screen_position = |col: usize| {
+            order
+                .iter()
+                .position(|&candidate| candidate == col)
+                .unwrap_or(0)
+        };
+        let mut cells: Vec<(usize, usize, usize)> = self
+            .thread_cells
+            .keys()
+            .map(|cell| (cell.row, screen_position(cell.col), cell.col))
+            .collect();
+        cells.sort_unstable();
+        let here = (self.cursor.row, self.cursor_position());
+        let target = if forward {
+            cells
+                .iter()
+                .find(|&&(row, position, _)| (row, position) > here)
+                .or(cells.first())
+        } else {
+            cells
+                .iter()
+                .rev()
+                .find(|&&(row, position, _)| (row, position) < here)
+                .or(cells.last())
+        };
+        match target {
+            Some(&(row, _, col)) => self.move_to(row, col),
+            None => self.set_message("no comments".to_string()),
         }
     }
 
@@ -636,7 +907,8 @@ impl App {
         PathBuf::from(format!("./{name}.json"))
     }
 
-    /// Save the table and say how it went in the status line. Saving over an
+    /// Save the table and its comment threads, and say how it went in the
+    /// status line. Saving over an
     /// existing file is refused, unless it's the current file or `force` is
     /// set (vim's rule). The writing itself is `Table::save`.
     fn save(&mut self, path: Option<String>, force: bool) {
@@ -648,7 +920,13 @@ impl App {
             self.set_message(format!("{} exists; use :w! to overwrite", target.display()));
             return;
         }
-        match self.table.save(&target) {
+        // The threads go in the file: a session keeps them in its log, not in
+        // `table`.
+        let saved = Table {
+            comments: self.threads.clone(),
+            ..self.table.clone()
+        };
+        match saved.save(&target) {
             Ok(()) => {
                 self.set_message(format!(
                     "wrote {} rows to {}",
@@ -703,6 +981,9 @@ impl App {
             Action::CommandLine => self.mode = Mode::Command(CommandLine::default()),
             Action::Detail => self.open_cell_view(Mode::Detail),
             Action::Record => self.open_cell_view(Mode::Record),
+            Action::Comment => self.open_comment(),
+            Action::NextComment => self.jump_to_comment(true),
+            Action::PreviousComment => self.jump_to_comment(false),
             // The spec's "prompt for a path": the command line, prefilled.
             Action::Save => {
                 let text = format!("w {}", self.default_save_path().display());
@@ -1240,6 +1521,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn every_detail_binding_has_help_text() {
+        for binding in DETAIL_BINDINGS {
+            assert_ne!(binding.help, "");
+            assert_ne!(binding.keys.len(), 0);
+        }
+    }
+
     fn prs_app() -> App {
         App::new(Table::from_path("examples/prs.json").unwrap())
     }
@@ -1490,5 +1779,280 @@ mod tests {
         app.reload_error = Some("table.json: broken".to_string());
         app.set_table(grid_table(3, 3, None), Instant::now());
         assert_eq!(app.reload_error, None);
+    }
+
+    /// Log lines for a comment by `author` on `prs.json`'s PR `row_id`.
+    fn comment_on(id: &str, author: &str, row_id: &str, column: &str) -> String {
+        format!(
+            r#"{{"op":"add","id":"{id}","author":"{author}","row_id":"{row_id}","column":"{column}","text":"{id} text","ts":"2026-10-28T19:03:00Z"}}"#
+        )
+    }
+
+    fn log(lines: &[String]) -> Vec<Event> {
+        comments::parse_log(&lines.join("\n")).events
+    }
+
+    #[test]
+    fn set_events_folds_the_log() {
+        let mut app = prs_app();
+        assert!(app.threads.is_empty(), "{:?}", app.threads);
+        app.set_events(log(&[comment_on("c1", "user", "404", "title")]));
+        assert_eq!(app.threads.len(), 1);
+        assert_eq!(
+            app.threads[0].value,
+            serde_json::json!("Bump serde to 1.0.229")
+        );
+        assert!(app.threads[0].awaiting_reply);
+    }
+
+    #[test]
+    fn a_reload_without_the_commented_row_orphans_its_thread() {
+        let mut app = prs_app();
+        app.set_events(log(&[comment_on("c1", "user", "404", "title")]));
+        assert!(!app.threads[0].orphaned);
+        let mut table = app.table().clone();
+        table.rows.retain(|row| row["number"] != 404);
+        app.set_table(table, Instant::now());
+        assert!(app.threads[0].orphaned);
+    }
+
+    #[test]
+    fn colon_w_saves_the_threads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.json");
+        let mut app = prs_app();
+        app.set_events(log(&[comment_on("c1", "user", "404", "title")]));
+        run_colon(&mut app, &format!("w {}", path.display()));
+        let saved: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved["comments"],
+            serde_json::to_value(&app.threads).unwrap()
+        );
+        assert_eq!(saved["comments"][0]["awaiting_reply"], true);
+    }
+
+    fn reply_to(id: &str, author: &str, thread: &str) -> String {
+        format!(
+            r#"{{"op":"add","id":"{id}","author":"{author}","reply_to":"{thread}","text":"{id} text","ts":"2026-10-28T19:04:00Z"}}"#
+        )
+    }
+
+    /// The one pending event, as an `Add`.
+    fn pending_add(app: &mut App) -> comments::Add {
+        let mut pending = app.take_pending();
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        let Event::Add(add) = pending.remove(0) else {
+            panic!("expected an add");
+        };
+        add
+    }
+
+    /// `c`, then `text`, then Enter.
+    fn comment(app: &mut App, text: &str) {
+        press_char(app, 'c');
+        type_text(app, text);
+        press(app, KeyCode::Enter, KeyModifiers::NONE);
+    }
+
+    #[test]
+    fn c_comments_on_the_cursor_cell() {
+        let mut app = prs_app();
+        press_char(&mut app, 'j'); // PR 404
+        press_char(&mut app, 'l'); // title
+        press_char(&mut app, 'c');
+        assert!(matches!(app.mode, Mode::Comment(_)), "{:?}", app.mode);
+        type_text(&mut app, "hi");
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Grid);
+        let add = pending_add(&mut app);
+        assert_eq!(add.author, Author::User);
+        assert_eq!(add.text, "hi");
+        assert_eq!(
+            (add.row_id.as_deref(), add.column.as_deref()),
+            (Some("404"), Some("title"))
+        );
+        assert_eq!(add.reply_to, None);
+    }
+
+    #[test]
+    fn c_on_a_cell_with_threads_replies_to_the_newest() {
+        let mut app = prs_app();
+        app.set_events(log(&[
+            comment_on("c1", "user", "409", "number"),
+            comment_on("c2", "agent", "409", "number"),
+        ]));
+        comment(&mut app, "hi");
+        let add = pending_add(&mut app);
+        assert_eq!(add.reply_to.as_deref(), Some("c2"));
+        assert_eq!((add.row_id, add.column), (None, None));
+    }
+
+    #[test]
+    fn esc_or_nothing_typed_sends_nothing() {
+        let mut app = prs_app();
+        press_char(&mut app, 'c');
+        type_text(&mut app, "hi");
+        press(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Grid);
+        comment(&mut app, "   ");
+        assert_eq!(app.take_pending(), []);
+    }
+
+    #[test]
+    fn c_without_a_cell_says_why() {
+        let mut app = App::new(Table::parse("[]").unwrap());
+        press_char(&mut app, 'c');
+        assert_eq!(app.mode, Mode::Grid);
+        assert_eq!(message(&app), Some("no rows"));
+    }
+
+    #[test]
+    fn a_reload_while_typing_keeps_the_comments_cell() {
+        let mut app = prs_app();
+        press_char(&mut app, 'j'); // PR 404, at index 1
+        press_char(&mut app, 'c');
+        type_text(&mut app, "hi");
+        let mut table = app.table().clone();
+        table.rows.remove(0); // now 404 is at index 0
+        app.set_table(table, Instant::now());
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(pending_add(&mut app).row_id.as_deref(), Some("404"));
+    }
+
+    #[test]
+    fn the_input_lines_share_their_editing_keys() {
+        let mut line = CommandLine::default();
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        for character in "abc".chars() {
+            line.edit(&key(KeyCode::Char(character)));
+        }
+        line.edit(&key(KeyCode::Backspace));
+        line.edit(&key(KeyCode::Home));
+        line.edit(&key(KeyCode::Char('x')));
+        assert_eq!((line.text.as_str(), line.cursor), ("xab", 1));
+        line.edit(&key(KeyCode::End));
+        line.edit(&key(KeyCode::Left));
+        line.edit(&key(KeyCode::Char('y')));
+        assert_eq!(line.text, "xayb");
+        line.edit(&KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        assert_eq!(line, CommandLine::default());
+    }
+
+    #[test]
+    fn c_in_the_cell_popup_comments_too() {
+        let mut app = prs_app();
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mode, Mode::Detail);
+        comment(&mut app, "hi");
+        assert_eq!(app.mode, Mode::Grid);
+        assert_eq!(pending_add(&mut app).row_id.as_deref(), Some("409"));
+    }
+
+    #[test]
+    fn d_in_the_cell_popup_asks_then_deletes_every_thread_on_the_cell() {
+        let mut app = prs_app();
+        app.set_events(log(&[
+            comment_on("c1", "user", "409", "number"),
+            comment_on("c2", "agent", "409", "number"),
+            comment_on("c3", "user", "404", "number"),
+        ]));
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press_char(&mut app, 'd');
+        let ids = vec!["c1".to_string(), "c2".to_string()];
+        assert_eq!(app.mode, Mode::ConfirmDelete(ids.clone()));
+        press_char(&mut app, 'n');
+        assert_eq!(app.mode, Mode::Detail);
+        assert_eq!(app.take_pending(), []);
+
+        press_char(&mut app, 'd');
+        press_char(&mut app, 'y');
+        assert_eq!(app.mode, Mode::Detail);
+        let deleted: Vec<String> = app
+            .take_pending()
+            .iter()
+            .map(|event| match event {
+                Event::Delete { id, .. } => id.clone(),
+                Event::Add(add) => panic!("expected deletes, got {add:?}"),
+            })
+            .collect();
+        assert_eq!(deleted, ids);
+    }
+
+    #[test]
+    fn d_without_threads_says_so() {
+        let mut app = prs_app();
+        press(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        press_char(&mut app, 'd');
+        assert_eq!(app.mode, Mode::Detail);
+        assert_eq!(message(&app), Some("no comments on this cell"));
+    }
+
+    #[test]
+    fn a_reload_without_cells_closes_the_delete_prompt() {
+        let mut app = prs_app();
+        app.mode = Mode::ConfirmDelete(vec!["c1".to_string()]);
+        app.set_table(Table::parse("[{}]").unwrap(), Instant::now());
+        assert_eq!(app.mode, Mode::Grid);
+    }
+
+    #[test]
+    fn brackets_jump_between_threads_in_reading_order() {
+        // Keyed on `c3`, so the key column is drawn first but isn't index 0.
+        let mut app = grid_app(Some("c3"));
+        app.set_events(log(&[
+            comment_on("t1", "user", "r3c3", "c1"),
+            comment_on("t2", "user", "r0c3", "c5"),
+            comment_on("t3", "user", "r0c3", "c3"),
+            comment_on("t4", "user", "r99c3", "c0"), // orphaned
+        ]));
+        app.cursor = Cursor { row: 1, col: 3 };
+        let mut visited = Vec::new();
+        for _ in 0..4 {
+            press_char(&mut app, ']');
+            visited.push((app.cursor.row, app.cursor.col));
+        }
+        // Row 3, then wrap to row 0: the key column (drawn first), then `c5`.
+        assert_eq!(visited, [(3, 1), (0, 3), (0, 5), (3, 1)]);
+        let mut visited = Vec::new();
+        for _ in 0..3 {
+            press_char(&mut app, '[');
+            visited.push((app.cursor.row, app.cursor.col));
+        }
+        assert_eq!(visited, [(0, 5), (0, 3), (3, 1)]);
+    }
+
+    #[test]
+    fn brackets_without_threads_say_so() {
+        let mut app = prs_app();
+        press_char(&mut app, ']');
+        assert_eq!(message(&app), Some("no comments"));
+        assert_eq!(app.cursor, Cursor { row: 0, col: 0 });
+    }
+
+    #[test]
+    fn markers_say_whether_a_thread_awaits_a_reply() {
+        let mut app = prs_app();
+        app.set_events(log(&[
+            comment_on("c1", "user", "409", "title"),
+            reply_to("c2", "agent", "c1"),
+            comment_on("c3", "user", "404", "title"),
+            comment_on("c4", "user", "409", "author"),
+            reply_to("c5", "agent", "c4"),
+            comment_on("c6", "user", "409", "author"),
+        ]));
+        assert_eq!(app.marker(0, 0), None);
+        assert_eq!(app.marker(0, 1), Some(Marker::Replied));
+        assert_eq!(app.marker(1, 1), Some(Marker::Awaiting));
+        // Two threads on 409's author; one is awaiting.
+        assert_eq!(app.marker(0, 2), Some(Marker::Awaiting));
+    }
+
+    #[test]
+    fn take_pending_empties_the_queue() {
+        let mut app = prs_app();
+        comment(&mut app, "hi");
+        assert_eq!(app.take_pending().len(), 1);
+        assert_eq!(app.take_pending(), []);
     }
 }

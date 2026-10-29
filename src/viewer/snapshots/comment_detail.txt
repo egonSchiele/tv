@@ -1,0 +1,28 @@
+"┌ Open pull requests ────────────────────────────────────────────────┐"
+"│ number │ title                                              │      │"
+"│    409 │ Fix login redirect                                 │      │"
+"│    404 │ Bump serde to 1.0.229                             ▸│      │"
+"│    40┌ title · number 404 ──────────────────────────────────┐      │"
+"│    40│Bump serde to 1.0.229                                 │      │"
+"│    39│                                                      │      │"
+"│    39│Comments  ·  c reply  ·  d delete                     │      │"
+"│    39│user  Why is this still open?                         │      │"
+"│    38│agent  Waiting on CI.                                 │      │"
+"│    38│Should be green by noon.                              │      │"
+"│    38│                                                      │      │"
+"│    38│                                                      │      │"
+"│    37│                                                      │      │"
+"│    37│                                                      │      │"
+"│    37└──────────────────────────────────────────────────────┘      │"
+"│    372 │ Add pagination to /v2/orders                       │      │"
+"├────────────────────────────────────────────────────────────────────┤"
+"│ row 2/40  col 2/9  ·  ? help  : command  q quit                    │"
+"└────────────────────────────────────────────────────────────────────┘"
+--- styles
+row 1: 1..9 BOLD, 10..62 BOLD
+row 2: 10..62 fg=Indexed(252) bg=Indexed(236)
+row 3: 1..10 fg=Indexed(252) bg=Indexed(236), 10..61 BOLD | REVERSED, 61..62 fg=Green BOLD | REVERSED, 62..63 fg=Indexed(252) bg=Indexed(236)
+row 7: 8..16 BOLD
+row 8: 8..14 BOLD
+row 9: 8..15 BOLD
+row 16: 10..62 fg=Indexed(252) bg=Indexed(236)

@@ -13,24 +13,32 @@
 "│  │           $  last column                           │  │"
 "│  │       Enter  cell detail                           │  │"
 "│  │           r  record view                           │  │"
+"│  │           c  comment on this cell                  │… │"
+"│  │           ]  next comment                          │  │"
+"│  │           [  previous comment                      │  │"
 "│  │           s  save (opens :w with the default path) │… │"
 "│  │           :  command line                          │  │"
 "│  │           ?  show this help                        │  │"
-"│  │    q Ctrl-c  quit                                  │… │"
-"│  │                                                    │  │"
+"│  │    q Ctrl-c  quit                                  │  │"
+"│  │                                                    │… │"
+"│  │ Cell detail                                        │  │"
+"│  │ Esc Enter q  close                                 │  │"
+"│  │           c  comment on this cell                  │  │"
+"│  │           d  delete this cell's comments           │  │"
+"│  │                                                    │… │"
 "│  │ Record view                                        │  │"
 "│  │         ↓ j  next field                            │  │"
-"│  │         ↑ k  previous field                        │… │"
+"│  │         ↑ k  previous field                        │  │"
 "│  │           n  next row                              │  │"
-"│  │           p  previous row                          │  │"
+"│  │           p  previous row                          │… │"
 "│  │     Esc r q  back to the grid                      │  │"
 "│  │                                                    │  │"
-"│  │ Commands                                           │… │"
+"│  │ Commands                                           │  │"
 "│  │       :help  show this help                        │  │"
 "│  │          :q  quit                                  │  │"
-"│  │   :w [path]  save; default ./<title>.json          │  │"
+"│  │   :w [path]  save; default ./<title>.json          │… │"
 "│  │  :w! [path]  save, overwriting a file              │  │"
-"│  │                                                    │… │"
+"│  │                                                    │  │"
 "├──│ Press any key to close                             │──┤"
 "│ r└────────────────────────────────────────────────────┘  │"
 "└──────────────────────────────────────────────────────────┘"
@@ -53,18 +61,26 @@ row 15: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
 row 16: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
 row 17: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
 row 18: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
-row 19: 1..3 fg=Indexed(252) bg=Indexed(236)
-row 20: 1..3 fg=Indexed(252) bg=Indexed(236), 4..16 BOLD
+row 19: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
+row 20: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
 row 21: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
-row 22: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
-row 23: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
+row 22: 1..3 fg=Indexed(252) bg=Indexed(236)
+row 23: 1..3 fg=Indexed(252) bg=Indexed(236), 4..16 BOLD
 row 24: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
 row 25: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
-row 26: 1..3 fg=Indexed(252) bg=Indexed(236)
-row 27: 1..3 fg=Indexed(252) bg=Indexed(236), 4..13 BOLD
-row 28: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
+row 26: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
+row 27: 1..3 fg=Indexed(252) bg=Indexed(236)
+row 28: 1..3 fg=Indexed(252) bg=Indexed(236), 4..16 BOLD
 row 29: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
 row 30: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
 row 31: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
-row 32: 1..3 fg=Indexed(252) bg=Indexed(236)
-row 33: 4..27 DIM
+row 32: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
+row 33: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
+row 34: 1..3 fg=Indexed(252) bg=Indexed(236)
+row 35: 1..3 fg=Indexed(252) bg=Indexed(236), 4..13 BOLD
+row 36: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
+row 37: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
+row 38: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
+row 39: 1..3 fg=Indexed(252) bg=Indexed(236), 4..17 BOLD
+row 40: 1..3 fg=Indexed(252) bg=Indexed(236)
+row 41: 4..27 DIM

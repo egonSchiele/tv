@@ -1,0 +1,13 @@
+"┌ Open pull requests ──────────────────────────────────────────────────────────────────────────────┐"
+"│ number │ title                                              │ author     │ state │ additions │   │"
+"│    409 │ Fix login redirect                                 │ jordan    ▸│ open  │       313 │   │"
+"│    404 │ Bump serde to 1.0.229                             ▸│ dependabot │ open  │         9 │   │"
+"│    403 │ Add retry with exponential backoff to the webhook… │ fatima     │ open  │      1204 │   │"
+"├──────────────────────────────────────────────────────────────────────────────────────────────────┤"
+"│ row 1/40  col 1/9  ·  1 awaiting reply  ·  1 orphaned  ·  ? help  : command  q quit              │"
+"└──────────────────────────────────────────────────────────────────────────────────────────────────┘"
+--- styles
+row 1: 1..9 BOLD, 10..62 BOLD, 63..75 BOLD, 76..83 BOLD, 84..95 BOLD
+row 2: 1..9 REVERSED, 9..74 BOLD, 74..75 DIM, 75..96 BOLD
+row 3: 1..9 BOLD, 61..62 BOLD
+row 4: 1..9 BOLD
