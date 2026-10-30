@@ -93,9 +93,9 @@ impl TableInput {
         };
         match self.file.as_deref() {
             None | Some("-") => {
-                Table::parse_with(&read_stdin()?, set, fill).context("parsing stdin")
+                Table::parse_input(&read_stdin()?, set, fill).context("parsing stdin")
             }
-            Some(path) => Table::from_path_with(path, set, fill),
+            Some(path) => Table::from_input_path(path, set, fill),
         }
     }
 }

@@ -467,6 +467,28 @@ fn agent_new_reads_a_file_or_dash() {
 }
 
 #[test]
+fn agent_push_reads_every_format_and_keeps_the_key() {
+    let home = tempfile::tempdir().unwrap();
+    let inputs = [
+        // JSON Lines, and `jq`'s pretty objects one after another
+        "{\"number\": 1, \"title\": \"a\"}\n{\"number\": 2, \"title\": \"b\"}\n",
+        "{\n  \"number\": 1,\n  \"title\": \"a\"\n}\n{\n  \"number\": 2,\n  \"title\": \"b\"\n}\n",
+    ];
+    let expected = serde_json::json!([{"number": 1, "title": "a"}, {"number": 2, "title": "b"}]);
+    for input in inputs {
+        let id = new_session(home.path());
+        agent(home.path(), &["push", &id], input);
+        let table = agent(home.path(), &["get", &id], "");
+        assert_eq!(
+            (table["key"].as_str(), table["title"].as_str()),
+            (Some("number"), Some("PRs")),
+            "{input}"
+        );
+        assert_eq!(table["rows"], expected, "{input}");
+    }
+}
+
+#[test]
 fn agent_new_without_a_table_makes_no_session() {
     let home = tempfile::tempdir().unwrap();
     assert_fails_with(&agent_output(home.path(), &["new"], ""), "parsing stdin");
