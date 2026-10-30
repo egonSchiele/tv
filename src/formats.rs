@@ -349,13 +349,30 @@ fn cell_value(cell: Option<&String>, typed: bool) -> Value {
     }
 }
 
+/// 2^53. Every integer up to this is exact as a float, so any JSON reader
+/// gets it back unchanged. Past it, one that reads numbers as floats, like
+/// JavaScript's `JSON.parse`, rounds.
+const MAX_EXACT_INTEGER: u64 = 1 << 53;
+
 /// A cell's text as a JSON number or boolean, if it is one and writes back
-/// as exactly the same text: `412`, `-2.5`, `true`. Not `02134` (not JSON),
-/// `1.50` (it would show as `1.5`), or a number with more digits than a
-/// float keeps. So a column is never shown differently from the file.
+/// as exactly the same text: `412`, `-2.5`, `true`. Not `02134` (not JSON)
+/// or `1.50` (it would show as `1.5`). Not an integer past 2^53 either, such
+/// as a 19-digit ID: tv would show it right, but `tv agent get` would hand
+/// an agent a number its JSON reader may round. So a column is never shown,
+/// or handed on, differently from the file.
 fn scalar(text: &str) -> Option<Value> {
     let value: Value = serde_json::from_str(text).ok()?;
-    let is_scalar = matches!(value, Value::Number(_) | Value::Bool(_));
+    let is_scalar = match &value {
+        Value::Bool(_) => true,
+        Value::Number(number) => {
+            // `None` for a float, which round-tripping already covers.
+            let integer = number
+                .as_u64()
+                .or_else(|| number.as_i64().map(i64::unsigned_abs));
+            integer.is_none_or(|integer| integer <= MAX_EXACT_INTEGER)
+        }
+        _ => false,
+    };
     // Not `value == text`, which clippy suggests: that compares the value
     // with a JSON string, so no number would ever match.
     let written = value.to_string();
@@ -541,6 +558,18 @@ mod tests {
             parsed[1],
             json!({"n": -2.5, "zip": "10001", "price": "2.25",
                    "big": "1", "flag": false, "mixed": "true"})
+        );
+    }
+
+    #[test]
+    fn integers_past_2_to_the_53_stay_text() {
+        assert_eq!(
+            rows("a,b,c\n9007199254740992,1234567890123456789,-9007199254740993\n"),
+            json!([{
+                "a": 9_007_199_254_740_992_u64,
+                "b": "1234567890123456789",
+                "c": "-9007199254740993"
+            }])
         );
     }
 
