@@ -632,14 +632,14 @@ impl App {
     /// status line says why.
     pub fn go_to(&mut self, row_id: &str, column: Option<&str>) {
         let Some(row) = self.table.row_index(row_id) else {
-            self.set_message(format!("goto: no row \"{row_id}\""));
+            self.set_message(format!("the agent's goto: no row \"{row_id}\""));
             return;
         };
         let col = match column {
             None => self.cursor.col,
             Some(name) => {
                 let Some(col) = self.table.column_index(name) else {
-                    self.set_message(format!("goto: no column \"{name}\""));
+                    self.set_message(format!("the agent's goto: no column \"{name}\""));
                     return;
                 };
                 col
@@ -2123,10 +2123,10 @@ mod tests {
         app.go_to("404", Some("title"));
         app.go_to("412", Some("title"));
         assert_eq!(app.cursor, Cursor { row: 1, col: 1 });
-        assert_eq!(message(&app), Some("goto: no row \"412\""));
+        assert_eq!(message(&app), Some("the agent's goto: no row \"412\""));
         app.go_to("409", Some("nope"));
         assert_eq!(app.cursor, Cursor { row: 1, col: 1 });
-        assert_eq!(message(&app), Some("goto: no column \"nope\""));
+        assert_eq!(message(&app), Some("the agent's goto: no column \"nope\""));
     }
 
     #[test]

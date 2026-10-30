@@ -262,10 +262,7 @@ pub fn threads(events: &[Event], table: &Table) -> Vec<Thread> {
                 .map(|&add| Message::from(add))
                 .collect();
             let row = rows.get(row_id).copied();
-            let col = table
-                .columns
-                .iter()
-                .position(|candidate| candidate.name == *column);
+            let col = table.column_index(column);
             let cell = row.zip(col);
             let value = cell
                 .and_then(|(row, _)| table.cell(row, column))

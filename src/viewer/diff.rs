@@ -22,14 +22,8 @@ pub fn same_cell(old: &Table, cursor: Cursor, new: &Table) -> Cursor {
         return cursor;
     }
     let row_id = old.row_id(cursor.row);
-    let row = (0..new.rows.len())
-        .find(|&index| new.row_id(index) == row_id)
-        .unwrap_or(cursor.row);
-    let col = new
-        .columns
-        .iter()
-        .position(|candidate| candidate.name == column.name)
-        .unwrap_or(cursor.col);
+    let row = new.row_index(&row_id).unwrap_or(cursor.row);
+    let col = new.column_index(&column.name).unwrap_or(cursor.col);
     Cursor { row, col }
 }
 

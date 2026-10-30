@@ -94,9 +94,10 @@ impl Table {
     }
 
     /// `parse`, with `set` replacing the text's `title` and `key`, and `fill`
-    /// supplying them where the text has neither a value nor `null`. Both
-    /// apply before validation, so a key from either is checked like one in
-    /// the file.
+    /// supplying them where the text has neither a value nor `null`. `set`
+    /// applies before validation, so a `--key` is checked like one in the
+    /// file. A key from `fill` gets the same check just after, so that its
+    /// error, and no other, can say where the key came from.
     pub fn parse_with(text: &str, set: Meta, fill: Meta) -> anyhow::Result<Table> {
         let mut value: Value = serde_json::from_str(text)?;
         if value.is_array() {
@@ -112,26 +113,28 @@ impl Table {
         let kept_key = fill
             .key
             .filter(|_| set.key.is_none() && value.get("key").is_none());
-        let key = set.key.or(kept_key);
         if let Value::Object(fields) = &mut value {
-            for (name, chosen) in [("title", title), ("key", key)] {
+            for (name, chosen) in [("title", title), ("key", set.key)] {
                 if let Some(chosen) = chosen {
                     fields.insert(name.to_string(), chosen.into());
                 }
             }
         }
-        let table = serde_json::from_value(value);
+        let mut table: Table = serde_json::from_value(value)?;
         // A key the caller didn't ask for is puzzling in an error, so say
         // where it came from and how to drop it.
-        match kept_key {
-            Some(key) => table.with_context(|| {
-                format!(
-                    "kept the session's key \"{key}\", since the table names none; \
-                     pass --key, or push the full format with \"key\": null to drop it"
-                )
-            }),
-            None => Ok(table?),
+        if let Some(key) = kept_key {
+            validate_key(key, &table.columns, &table.rows)
+                .map_err(anyhow::Error::msg)
+                .with_context(|| {
+                    format!(
+                        "kept the session's key \"{key}\", since the table names none; \
+                         pass --key, or push the full format with \"key\": null to drop it"
+                    )
+                })?;
+            table.key = Some(key.to_string());
         }
+        Ok(table)
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> anyhow::Result<Table> {
@@ -523,6 +526,16 @@ mod tests {
                 "{message}"
             );
             assert!(message.contains("\"key\": null"), "{message}");
+        }
+    }
+
+    #[test]
+    fn other_errors_dont_blame_the_kept_key() {
+        let fill = meta(None, Some("number"));
+        for text in ["[1, 2]", "5", r#"{"rows": 5}"#] {
+            let error = Table::parse_with(text, Meta::default(), fill).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(!message.contains("kept"), "{text}: {message}");
         }
     }
 
