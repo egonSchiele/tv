@@ -12,7 +12,7 @@ From a clone of this repo, with [Rust](https://rustup.rs) installed:
 make install
 ```
 
-This builds an optimized `tv` and copies it to `~/.bin`, which needs to be on your `PATH`. To install somewhere else, run `make install BINDIR=<dir>`. Run it again to update.
+This builds an optimized `tv` and copies it to `~/.local/bin`, which is already on your `PATH` on many systems. If `tv` isn't found afterwards, add that folder to your `PATH`. To install somewhere else, run `make install BINDIR=<dir>`. To update, `git pull` and run it again.
 
 ## Quick start
 
@@ -39,7 +39,7 @@ Install Rust with [rustup](https://rustup.rs). `rust-toolchain.toml` pins the to
 | `make fmt` | Format the code with rustfmt (Prettier equivalent). |
 | `make lint` | Lint with clippy (ESLint equivalent), treating warnings as errors. `cargo clippy --fix` auto-fixes many lints. |
 | `make check` | Run what CI runs: format check, lint, tests. |
-| `make install` | Build an optimized `tv` and copy it to `~/.bin` (or `BINDIR`). |
+| `make install` | Build an optimized `tv` and copy it to `~/.local/bin` (or `BINDIR`). |
 
 ## Dependencies
 

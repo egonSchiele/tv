@@ -30,15 +30,15 @@ fmt-check:
 # What CI runs.
 check: fmt-check lint test
 
-# Build an optimized tv and copy it to ~/.bin. Override with `make install BINDIR=...`.
+# Build an optimized tv and copy it to ~/.local/bin. Override with `make install BINDIR=...`.
 # `install`, not `cp`: it replaces the old binary instead of writing over it, and
 # on Apple silicon a binary overwritten in place can be killed at launch.
-BINDIR ?= $(HOME)/.bin
+BINDIR ?= $(HOME)/.local/bin
 
 install:
 	cargo build --release --locked
-	install -d $(BINDIR)
-	install -m 755 target/release/tv $(BINDIR)/tv
+	install -d "$(BINDIR)"
+	install -m 755 target/release/tv "$(BINDIR)/tv"
 
 clean:
 	cargo clean
