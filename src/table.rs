@@ -79,24 +79,74 @@ impl Column {
     }
 }
 
+/// A table's `title` and `key`, as `tv agent new` and `push` set them.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Meta<'a> {
+    pub title: Option<&'a str>,
+    pub key: Option<&'a str>,
+}
+
 impl Table {
     /// Parse a table from JSON text, accepting either the full format or a bare
     /// array of row objects.
     pub fn parse(text: &str) -> anyhow::Result<Table> {
+        Table::parse_with(text, Meta::default(), Meta::default())
+    }
+
+    /// `parse`, with `set` replacing the text's `title` and `key`, and `fill`
+    /// supplying them where the text has neither a value nor `null`. `set`
+    /// applies before validation, so a `--key` is checked like one in the
+    /// file. A key from `fill` gets the same check just after, so that its
+    /// error, and no other, can say where the key came from.
+    pub fn parse_with(text: &str, set: Meta, fill: Meta) -> anyhow::Result<Table> {
         let mut value: Value = serde_json::from_str(text)?;
         if value.is_array() {
             let mut wrapper = Map::new();
             wrapper.insert("rows".to_string(), value);
             value = Value::Object(wrapper);
         }
-        Ok(serde_json::from_value(value)?)
+        // `get` is `None` for a field the text doesn't have, and for a
+        // scalar, which serde then rejects below.
+        let title = set
+            .title
+            .or(fill.title.filter(|_| value.get("title").is_none()));
+        let kept_key = fill
+            .key
+            .filter(|_| set.key.is_none() && value.get("key").is_none());
+        if let Value::Object(fields) = &mut value {
+            for (name, chosen) in [("title", title), ("key", set.key)] {
+                if let Some(chosen) = chosen {
+                    fields.insert(name.to_string(), chosen.into());
+                }
+            }
+        }
+        let mut table: Table = serde_json::from_value(value)?;
+        // A key the caller didn't ask for is puzzling in an error, so say
+        // where it came from and how to drop it.
+        if let Some(key) = kept_key {
+            validate_key(key, &table.columns, &table.rows)
+                .map_err(anyhow::Error::msg)
+                .with_context(|| {
+                    format!(
+                        "kept the session's key \"{key}\", since the table names none; \
+                         pass --key, or push the full format with \"key\": null to drop it"
+                    )
+                })?;
+            table.key = Some(key.to_string());
+        }
+        Ok(table)
     }
 
     pub fn from_path(path: impl AsRef<Path>) -> anyhow::Result<Table> {
+        Table::from_path_with(path, Meta::default(), Meta::default())
+    }
+
+    /// `from_path`, with `set` and `fill` applied as in `parse_with`.
+    pub fn from_path_with(path: impl AsRef<Path>, set: Meta, fill: Meta) -> anyhow::Result<Table> {
         let path = path.as_ref();
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Table::parse(&text).with_context(|| format!("parsing {}", path.display()))
+        Table::parse_with(&text, set, fill).with_context(|| format!("parsing {}", path.display()))
     }
 
     /// Write the table, comments included, in the full format. Inferred
@@ -128,9 +178,25 @@ impl Table {
             .collect()
     }
 
+    /// The index of the row whose ID (`row_id`) is `row_id`. `row_indices`
+    /// is for looking up many rows; this is for one.
+    pub fn row_index(&self, row_id: &str) -> Option<usize> {
+        (0..self.rows.len()).find(|&index| self.row_id(index) == row_id)
+    }
+
+    /// The index of the column named `name`.
+    pub fn column_index(&self, name: &str) -> Option<usize> {
+        self.columns.iter().position(|column| column.name == name)
+    }
+
     pub fn key_column_index(&self) -> Option<usize> {
-        let key = self.key.as_deref()?;
-        self.columns.iter().position(|column| column.name == key)
+        self.column_index(self.key.as_deref()?)
+    }
+
+    /// The column a new viewer's cursor starts on: the key column, which is
+    /// drawn first, or else the first column.
+    pub fn start_column(&self) -> usize {
+        self.key_column_index().unwrap_or(0)
     }
 }
 
@@ -394,6 +460,100 @@ mod tests {
         assert!(message.contains("row 1 has no value"), "{message}");
     }
 
+    fn meta<'a>(title: Option<&'a str>, key: Option<&'a str>) -> Meta<'a> {
+        Meta { title, key }
+    }
+
+    #[test]
+    fn parse_with_sets_a_title_and_key() {
+        let rows = r#"[{"id": 1}, {"id": 2}]"#;
+        let table = Table::parse_with(rows, meta(Some("T"), Some("id")), Meta::default()).unwrap();
+        assert_eq!(
+            (table.title.as_deref(), table.key.as_deref()),
+            (Some("T"), Some("id"))
+        );
+        let file = r#"{"title": "old", "key": "x", "rows": [{"id": 1, "x": 1}]}"#;
+        let table = Table::parse_with(file, meta(Some("T"), Some("id")), Meta::default()).unwrap();
+        assert_eq!(
+            (table.title.as_deref(), table.key.as_deref()),
+            (Some("T"), Some("id"))
+        );
+    }
+
+    #[test]
+    fn a_set_key_is_validated_like_one_in_the_file() {
+        let rows = r#"[{"id": 1}, {"id": 1}]"#;
+        let error = Table::parse_with(rows, meta(None, Some("id")), Meta::default()).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("duplicate key value \"1\" at rows 0 and 1"),
+            "{message}"
+        );
+        assert!(!message.contains("kept"), "{message}");
+    }
+
+    #[test]
+    fn fill_supplies_only_what_the_text_doesnt_have() {
+        let fill = meta(Some("kept"), Some("id"));
+        let table = Table::parse_with(r#"[{"id": 1}]"#, Meta::default(), fill).unwrap();
+        assert_eq!(
+            (table.title.as_deref(), table.key.as_deref()),
+            (Some("kept"), Some("id"))
+        );
+        let own = r#"{"title": "own", "key": "n", "rows": [{"id": 1, "n": 1}]}"#;
+        let table = Table::parse_with(own, Meta::default(), fill).unwrap();
+        assert_eq!(
+            (table.title.as_deref(), table.key.as_deref()),
+            (Some("own"), Some("n"))
+        );
+        // `null` counts as naming the field: it's how a push drops a key.
+        let nulls = r#"{"title": null, "key": null, "rows": [{"id": 1}]}"#;
+        let table = Table::parse_with(nulls, Meta::default(), fill).unwrap();
+        assert_eq!((table.title, table.key), (None, None));
+        // What's set wins over `fill`.
+        let table = Table::parse_with(r#"[{"id": 1}]"#, meta(Some("set"), None), fill).unwrap();
+        assert_eq!(table.title.as_deref(), Some("set"));
+    }
+
+    #[test]
+    fn a_kept_key_that_fails_says_where_it_came_from() {
+        let fill = meta(None, Some("number"));
+        for rows in [r#"[{"title": "a"}]"#, r#"[{"number": 1}, {"number": 1}]"#] {
+            let error = Table::parse_with(rows, Meta::default(), fill).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(
+                message.starts_with("kept the session's key \"number\""),
+                "{message}"
+            );
+            assert!(message.contains("\"key\": null"), "{message}");
+        }
+    }
+
+    #[test]
+    fn other_errors_dont_blame_the_kept_key() {
+        let fill = meta(None, Some("number"));
+        for text in ["[1, 2]", "5", r#"{"rows": 5}"#] {
+            let error = Table::parse_with(text, Meta::default(), fill).unwrap_err();
+            let message = format!("{error:#}");
+            assert!(!message.contains("kept"), "{text}: {message}");
+        }
+    }
+
+    #[test]
+    fn from_path_with_applies_meta() {
+        let table = Table::from_path_with(
+            "examples/prs.json",
+            meta(Some("PRs"), None),
+            Meta::default(),
+        )
+        .unwrap();
+        assert_eq!(table.title.as_deref(), Some("PRs"));
+        assert_eq!(table.key.as_deref(), Some("number"));
+        let error =
+            Table::from_path_with("no/such.json", Meta::default(), Meta::default()).unwrap_err();
+        assert!(format!("{error:#}").starts_with("reading no/such.json"));
+    }
+
     #[test]
     fn rows_are_required() {
         let message = error_message(r#"{"title": "no rows field"}"#);
@@ -425,6 +585,44 @@ mod tests {
         let unkeyed = Table::parse(r#"[{"a": 1}, {"a": 2}]"#).unwrap();
         let expected = HashMap::from([("#0".to_string(), 0), ("#1".to_string(), 1)]);
         assert_eq!(unkeyed.row_indices(), expected);
+    }
+
+    #[test]
+    fn row_index_finds_one_row_by_id() {
+        let keyed = Table::parse(r#"{"key": "id", "rows": [{"id": 412}, {"id": "abc"}]}"#).unwrap();
+        assert_eq!(keyed.row_index("412"), Some(0));
+        assert_eq!(keyed.row_index("abc"), Some(1));
+        assert_eq!(keyed.row_index("#1"), None);
+        let unkeyed = Table::parse(r#"[{"a": 1}, {"a": 2}]"#).unwrap();
+        assert_eq!(unkeyed.row_index("#1"), Some(1));
+        assert_eq!(unkeyed.row_index("#2"), None);
+    }
+
+    #[test]
+    fn column_index_finds_a_column_by_name() {
+        let table = Table::from_path("examples/prs.json").unwrap();
+        assert_eq!(table.column_index("number"), Some(0));
+        assert_eq!(table.column_index("title"), Some(1));
+        assert_eq!(table.column_index("nope"), None);
+    }
+
+    #[test]
+    fn start_column_is_the_key_column_or_the_first() {
+        let keyed_second =
+            r#"{"key": "id", "columns": [{"name": "a"}, {"name": "id"}], "rows": []}"#;
+        assert_eq!(Table::parse(keyed_second).unwrap().start_column(), 1);
+        assert_eq!(
+            Table::from_path("examples/prs.json")
+                .unwrap()
+                .start_column(),
+            0
+        );
+        assert_eq!(
+            Table::parse(r#"[{"a": 1, "b": 2}]"#)
+                .unwrap()
+                .start_column(),
+            0
+        );
     }
 
     #[test]

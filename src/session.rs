@@ -4,8 +4,7 @@
 //! what makes `create` atomic to readers: `table.json` is written atomically
 //! as the last step, so a concurrent `tv ls` sees either no session or a
 //! complete one, never a half-made one. The comment log, if the table came
-//! with comments, is written before it. Keep that rule when adding other
-//! ways to create sessions (`tv agent new`, ADI-225).
+//! with comments, is written before it.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, DirBuilder, OpenOptions};
@@ -31,16 +30,18 @@ const ID_ALPHABET: &[u8] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 pub const TABLE_FILE: &str = "table.json";
 pub const VIEW_FILE: &str = "view.json";
 pub const COMMENTS_FILE: &str = "comments.jsonl";
+pub const GOTO_FILE: &str = "goto.json";
 
 /// Every file a session directory may hold. `remove` deletes exactly these
 /// and nothing else; add a name here when a new file joins the layout.
-/// `goto.json` is ADI-228's cursor request from the agent; it's listed now so
-/// `tv rm` doesn't refuse a session with a pending goto.
-const SESSION_FILES: &[&str] = &[TABLE_FILE, VIEW_FILE, COMMENTS_FILE, "goto.json"];
+const SESSION_FILES: &[&str] = &[TABLE_FILE, VIEW_FILE, COMMENTS_FILE, GOTO_FILE];
 
 /// The sessions root. Holds the path only; every method does its IO on call.
 pub struct Sessions {
     root: PathBuf, // …/sessions
+    /// `TV_HOME`, made absolute, if it was set. `tv agent`'s `open_command`
+    /// repeats it, since the user's shell may not have it.
+    tv_home: Option<PathBuf>,
 }
 
 /// One session directory. Only `Sessions` makes these, so the ID is always
@@ -65,6 +66,15 @@ pub struct View {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column: Option<String>,
     pub updated_at: String, // RFC 3339, from `time::rfc3339`
+}
+
+/// A cursor move `tv agent goto` asks the viewer for: `goto.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Goto {
+    pub row_id: String,
+    /// `None` keeps the viewer's column.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
 }
 
 /// Enough of a file's metadata to notice a change. For `table.json`,
@@ -97,17 +107,33 @@ impl Sessions {
         // An empty `TV_HOME=` counts as unset, as with XDG variables. Otherwise
         // the root would be the relative path `sessions`, in whatever
         // directory `tv` runs from.
-        let home = match tv_home.filter(|home| !home.is_empty()) {
-            Some(home) => PathBuf::from(home),
+        let tv_home = tv_home
+            .filter(|home| !home.is_empty())
+            .map(std::path::absolute)
+            .transpose()
+            .context("resolving TV_HOME")?;
+        let home = match &tv_home {
+            Some(home) => home.clone(),
             None => std::env::home_dir()
                 .context("can't find your home directory; set TV_HOME")?
                 .join(".tv"),
         };
-        Ok(Sessions::new(home.join("sessions")))
+        Ok(Sessions {
+            tv_home,
+            ..Sessions::new(home.join("sessions"))
+        })
     }
 
     pub fn new(root: PathBuf) -> Sessions {
-        Sessions { root }
+        Sessions {
+            root,
+            tv_home: None,
+        }
+    }
+
+    /// `TV_HOME`, absolute, or `None` for the default `~/.tv`.
+    pub fn tv_home(&self) -> Option<&Path> {
+        self.tv_home.as_deref()
     }
 
     /// A new session holding `table`. Creates the root if needed.
@@ -340,6 +366,38 @@ impl Session {
         file.write_all(text.as_bytes())
             .and_then(|()| file.sync_all())
             .with_context(writing)
+    }
+
+    /// Ask the viewer to move its cursor: write `goto.json` atomically. A
+    /// request the viewer hasn't applied yet is replaced.
+    pub fn write_goto(&self, goto: &Goto) -> anyhow::Result<()> {
+        files::write_json(&self.dir.join(GOTO_FILE), goto)
+    }
+
+    /// The pending `goto.json`, or `None` if there's none. The viewer calls
+    /// this. It's deleted once read, before it's parsed, so a broken one is
+    /// reported once rather than every tick.
+    ///
+    /// Read, then delete: a second `goto` landing between the two would be
+    /// deleted unread. The gap is two syscalls, and `goto`s come from an
+    /// agent's turns, seconds apart. Taking the file by renaming it first
+    /// would close the gap, at the cost of a temp name and of handling one
+    /// that a crash leaves behind.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "deletes only goto.json, by name, right after reading it"
+    )]
+    pub fn take_goto(&self) -> anyhow::Result<Option<Goto>> {
+        let path = self.dir.join(GOTO_FILE);
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+        };
+        fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        let goto =
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+        Ok(Some(goto))
     }
 
     /// Write `view.json` atomically (temp file + rename, like `table.json`).
@@ -761,6 +819,55 @@ mod tests {
     }
 
     #[test]
+    fn remove_deletes_a_pending_goto_too() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        let dir = session.dir.clone();
+        session.write_goto(&goto(None)).unwrap();
+        sessions.remove(session).unwrap();
+        assert!(!dir.exists());
+    }
+
+    fn goto(column: Option<&str>) -> Goto {
+        Goto {
+            row_id: "#1".to_string(),
+            column: column.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_goto_is_taken_once() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        assert_eq!(session.take_goto().unwrap(), None);
+        session.write_goto(&goto(Some("b"))).unwrap();
+        assert_eq!(session.take_goto().unwrap(), Some(goto(Some("b"))));
+        assert!(!session.dir.join(GOTO_FILE).exists());
+        assert_eq!(session.take_goto().unwrap(), None);
+    }
+
+    #[test]
+    fn a_goto_without_a_column_writes_none() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        session.write_goto(&goto(None)).unwrap();
+        let text = fs::read_to_string(session.dir.join(GOTO_FILE)).unwrap();
+        assert!(!text.contains("column"), "{text}");
+        assert_eq!(session.take_goto().unwrap(), Some(goto(None)));
+    }
+
+    #[test]
+    fn a_broken_goto_is_an_error_and_is_gone() {
+        let (_dir, sessions) = sessions();
+        let session = sessions.create(&table()).unwrap();
+        fs::write(session.dir.join(GOTO_FILE), "not json").unwrap();
+        let error = session.take_goto().unwrap_err();
+        assert!(format!("{error:#}").contains("parsing"), "{error:#}");
+        assert!(!session.dir.join(GOTO_FILE).exists());
+        assert_eq!(session.take_goto().unwrap(), None);
+    }
+
+    #[test]
     fn remove_deletes_a_leftover_temp_file() {
         let (_dir, sessions) = sessions();
         let session = sessions.create(&table()).unwrap();
@@ -1019,6 +1126,7 @@ mod tests {
     fn from_home_appends_sessions() {
         let sessions = Sessions::from_home(Some("/x".into())).unwrap();
         assert_eq!(sessions.root, PathBuf::from("/x/sessions"));
+        assert_eq!(sessions.tv_home(), Some(Path::new("/x")));
         for unset in [None, Some(OsString::new())] {
             let sessions = Sessions::from_home(unset).unwrap();
             assert!(
@@ -1026,7 +1134,16 @@ mod tests {
                 "{:?}",
                 sessions.root
             );
+            assert_eq!(sessions.tv_home(), None);
         }
+    }
+
+    #[test]
+    fn a_relative_tv_home_is_made_absolute() {
+        let sessions = Sessions::from_home(Some("rel".into())).unwrap();
+        let home = std::env::current_dir().unwrap().join("rel");
+        assert_eq!(sessions.tv_home(), Some(home.as_path()));
+        assert_eq!(sessions.root, home.join("sessions"));
     }
 
     #[test]

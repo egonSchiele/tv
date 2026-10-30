@@ -41,38 +41,6 @@ pub enum Event {
 }
 
 impl Event {
-    /// A new top-level comment on a cell, stamped now.
-    pub fn comment(
-        id: String,
-        author: Author,
-        row_id: String,
-        column: String,
-        text: String,
-    ) -> Event {
-        Event::Add(Add {
-            id,
-            author,
-            row_id: Some(row_id),
-            column: Some(column),
-            reply_to: None,
-            text,
-            ts: now(),
-        })
-    }
-
-    /// A new reply to `thread` (its top-level comment's ID), stamped now.
-    pub fn reply(id: String, author: Author, thread: String, text: String) -> Event {
-        Event::Add(Add {
-            id,
-            author,
-            row_id: None,
-            column: None,
-            reply_to: Some(thread),
-            text,
-            ts: now(),
-        })
-    }
-
     /// Delete the comment `id`, stamped now.
     pub fn delete(id: String) -> Event {
         Event::Delete { id, ts: now() }
@@ -121,8 +89,42 @@ pub struct Add {
     pub ts: String, // RFC 3339, from `time::rfc3339`
 }
 
+impl Add {
+    /// A new top-level comment on a cell, stamped now.
+    pub fn comment(
+        id: String,
+        author: Author,
+        row_id: String,
+        column: String,
+        text: String,
+    ) -> Add {
+        Add {
+            id,
+            author,
+            row_id: Some(row_id),
+            column: Some(column),
+            reply_to: None,
+            text,
+            ts: now(),
+        }
+    }
+
+    /// A new reply to `thread` (its top-level comment's ID), stamped now.
+    pub fn reply(id: String, author: Author, thread: String, text: String) -> Add {
+        Add {
+            id,
+            author,
+            row_id: None,
+            column: None,
+            reply_to: Some(thread),
+            text,
+            ts: now(),
+        }
+    }
+}
+
 /// A comment on a cell and its replies, as a saved file's `comments` holds
-/// it and `tv agent comments` will print it. `threads` works out `value`,
+/// it and `tv agent comments` prints it. `threads` works out `value`,
 /// `awaiting_reply`, `orphaned` and `cell` against the current table.
 /// `import` ignores them, and a file may leave them out.
 ///
@@ -257,13 +259,10 @@ pub fn threads(events: &[Event], table: &Table) -> Vec<Thread> {
             let thread_replies = replies.get(top.id.as_str()).into_iter().flatten();
             let messages: Vec<Message> = iter::once(top)
                 .chain(thread_replies)
-                .map(|add| message(add))
+                .map(|&add| Message::from(add))
                 .collect();
             let row = rows.get(row_id).copied();
-            let col = table
-                .columns
-                .iter()
-                .position(|candidate| candidate.name == *column);
+            let col = table.column_index(column);
             let cell = row.zip(col);
             let value = cell
                 .and_then(|(row, _)| table.cell(row, column))
@@ -286,12 +285,14 @@ pub fn threads(events: &[Event], table: &Table) -> Vec<Thread> {
         .collect()
 }
 
-fn message(add: &Add) -> Message {
-    Message {
-        id: add.id.clone(),
-        author: add.author,
-        text: add.text.clone(),
-        ts: add.ts.clone(),
+impl From<&Add> for Message {
+    fn from(add: &Add) -> Message {
+        Message {
+            id: add.id.clone(),
+            author: add.author,
+            text: add.text.clone(),
+            ts: add.ts.clone(),
+        }
     }
 }
 
@@ -591,15 +592,13 @@ mod tests {
 
     #[test]
     fn constructors_fill_in_what_theyre_given() {
-        let Event::Add(add) = Event::comment(
+        let add = Add::comment(
             "c1".to_string(),
             Author::User,
             "412".to_string(),
             "title".to_string(),
             "hi".to_string(),
-        ) else {
-            panic!("expected an add");
-        };
+        );
         assert_eq!(
             (add.id.as_str(), add.author, add.text.as_str()),
             ("c1", Author::User, "hi")
@@ -613,17 +612,25 @@ mod tests {
         assert_eq!(add.ts.len(), 20, "{}", add.ts);
         assert!(add.ts.ends_with('Z'), "{}", add.ts);
 
-        let reply = Event::reply(
+        let add = Add::reply(
             "c2".to_string(),
             Author::Agent,
             "c1".to_string(),
             "yo".to_string(),
         );
-        let Event::Add(add) = &reply else {
-            panic!("expected an add");
-        };
         assert_eq!(add.reply_to.as_deref(), Some("c1"));
         assert_eq!((add.row_id.as_deref(), add.column.as_deref()), (None, None));
+        let message = Message::from(&add);
+        assert_eq!(
+            message,
+            Message {
+                id: "c2".to_string(),
+                author: Author::Agent,
+                text: "yo".to_string(),
+                ts: add.ts.clone(),
+            }
+        );
+        let reply = Event::Add(add);
 
         let delete = Event::delete("c1".to_string());
         assert!(matches!(&delete, Event::Delete { id, .. } if id == "c1"));
