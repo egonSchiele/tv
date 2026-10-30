@@ -17,13 +17,13 @@ This builds an optimized `tv` and copies it to `~/.local/bin`, which is already 
 ## Quick start
 
 ```sh
-gh pr list --json number,title,author | tv -   # any JSON array of objects
-tv data.json                                   # or a file; see docs/schema.md
+gh pr list --json number,title,author | tv -   # JSON, JSON Lines, CSV, TSV or Markdown
+tv sales.csv                                   # or a file; see docs/schema.md
 tv ls                                          # sessions, most recent first
 tv                                             # reopen the most recent session
 ```
 
-Press `?` in the viewer for every key and command. In a clone of this repo, `make run` opens `examples/prs.json`. [docs/schema.md](docs/schema.md) describes the table format.
+Press `?` in the viewer for every key and command. In a clone of this repo, `make run` opens `examples/prs.json`. [docs/schema.md](docs/schema.md) describes the table format and the input formats tv reads.
 
 For agents: `tv agent help` prints a guide to using tv, and `tv skills install tv-tables --to .claude/skills` gives your agent a skill that teaches it.
 

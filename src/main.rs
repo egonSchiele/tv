@@ -34,8 +34,9 @@ use viewer::layout::{Align, display_width, fit};
     after_help = "Agents: `tv agent help` is a guide to using tv."
 )]
 struct Cli {
-    /// A JSON file to open (`.` or `/` in the name), `-` to read stdin, or a
+    /// A file to open (`.` or `/` in the name), `-` to read stdin, or a
     /// session ID. With none, the most recent session. Same as `tv open`.
+    /// Files and stdin can be JSON, JSON Lines, CSV, TSV or a Markdown table.
     target: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,

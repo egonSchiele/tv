@@ -19,10 +19,13 @@ Use tv instead of printing a table when it has more than about 6 columns or
 
 ## Quick start
 
-Pipe a JSON array of objects into `tv agent new`, or give it a file:
+Pipe rows into `tv agent new`, or give it a file. It reads JSON (an array of
+objects, or one object per line), CSV, TSV and Markdown tables, so most
+command output goes straight in:
 
 ```sh
 gh pr list --json number,title,headRefName | tv agent new --key number --title "Open PRs"
+sqlite3 -csv -header app.db 'select id, email from users' | tv agent new --key id --title "Users"
 tv agent new rows.json --key id --title "Failing tests"
 ```
 
@@ -53,7 +56,8 @@ session's key and title unless you pass `--key` or `--title`:
 gh pr list --json number,title,headRefName | tv agent push k3f9x2
 ```
 
-For a small edit, `get` the table, change it, and push it back:
+For a small edit, `get` the table, change it, and push it back. `get` prints
+JSON, whatever format the table came in:
 
 ```sh
 tv agent get k3f9x2 | jq '(.rows[] | select(.number == 404)).title = "Fixed"' | tv agent push k3f9x2
