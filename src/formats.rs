@@ -124,6 +124,10 @@ fn delimited(text: &str, delimiter: char) -> anyhow::Result<Value> {
 /// with `"` is quoted: it can hold the delimiter and line breaks, and `""`
 /// in it is one `"`. A `"` anywhere else is just a character. Lines end in
 /// `\n` or `\r\n`, and a blank line is a record of one empty cell.
+///
+/// Unlike RFC 4180, spaces around an unquoted field are dropped, since
+/// people and agents often write `name, age`. A quoted field keeps its
+/// spaces, and spaces before its opening quote don't stop it being quoted.
 fn split_records(text: &str, delimiter: char) -> anyhow::Result<Vec<Record>> {
     // A final line break ends the last line rather than starting another.
     let text = text
@@ -132,7 +136,7 @@ fn split_records(text: &str, delimiter: char) -> anyhow::Result<Vec<Record>> {
         .unwrap_or(text);
     let mut records = Vec::new();
     let mut cells = Vec::new();
-    let mut cell = String::new();
+    let mut cell = Cell::default();
     let mut line = 1;
     let mut record_line = 1;
     // The line a quoted field started on, while inside it.
@@ -141,22 +145,27 @@ fn split_records(text: &str, delimiter: char) -> anyhow::Result<Vec<Record>> {
     while let Some(character) = chars.next() {
         if quote_line.is_some() {
             match character {
-                '"' if chars.next_if_eq(&'"').is_some() => cell.push('"'),
+                '"' if chars.next_if_eq(&'"').is_some() => cell.text.push('"'),
                 '"' => quote_line = None,
                 _ => {
                     if character == '\n' {
                         line += 1;
                     }
-                    cell.push(character);
+                    cell.text.push(character);
                 }
             }
             continue;
         }
+        let at_start = cell.text.is_empty() && !cell.quoted;
         match character {
-            '"' if cell.is_empty() => quote_line = Some(line),
+            ' ' if at_start => {}
+            '"' if at_start => {
+                cell.quoted = true;
+                quote_line = Some(line);
+            }
             '\r' if chars.peek() == Some(&'\n') => {}
             '\n' => {
-                cells.push(std::mem::take(&mut cell));
+                cells.push(std::mem::take(&mut cell).finish());
                 records.push(Record {
                     line: record_line,
                     cells: std::mem::take(&mut cells),
@@ -164,19 +173,38 @@ fn split_records(text: &str, delimiter: char) -> anyhow::Result<Vec<Record>> {
                 line += 1;
                 record_line = line;
             }
-            _ if character == delimiter => cells.push(std::mem::take(&mut cell)),
-            _ => cell.push(character),
+            _ if character == delimiter => cells.push(std::mem::take(&mut cell).finish()),
+            _ => cell.text.push(character),
         }
     }
     if let Some(line) = quote_line {
         bail!("line {line}: a quoted field has no closing quote");
     }
-    cells.push(cell);
+    cells.push(cell.finish());
     records.push(Record {
         line: record_line,
         cells,
     });
     Ok(records)
+}
+
+/// A field as `split_records` reads it.
+#[derive(Default)]
+struct Cell {
+    text: String,
+    quoted: bool,
+}
+
+impl Cell {
+    /// The field's text: as written if it was quoted, and without trailing
+    /// spaces if not. Leading ones were never added.
+    fn finish(self) -> String {
+        if self.quoted {
+            self.text
+        } else {
+            self.text.trim_end_matches(' ').to_string()
+        }
+    }
 }
 
 /// A Markdown pipe table: a header row, a `|---|` row under it, then the
@@ -473,6 +501,20 @@ mod tests {
                 {"a": "x, y", "b": "say \"hi\""},
                 {"a": "two\nlines", "b": "5 \"in\""}
             ])
+        );
+    }
+
+    #[test]
+    fn spaces_around_unquoted_cells_are_dropped() {
+        assert_eq!(
+            rows("name, age\nsam , 41\n"),
+            json!([{"name": "sam", "age": 41}])
+        );
+        // A quoted cell keeps its spaces, and spaces before its opening quote
+        // don't stop it being quoted.
+        assert_eq!(
+            rows("a, b\n\" x \", \"y, z\"\n"),
+            json!([{"a": " x ", "b": "y, z"}])
         );
     }
 

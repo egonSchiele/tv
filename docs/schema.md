@@ -67,6 +67,7 @@ A UTF-8 byte order mark is skipped. Empty input is an error.
 
 - The first line is the header.
 - Quoting follows RFC 4180: a field that starts with `"` can hold the delimiter and line breaks, and `""` inside it is one `"`. Lines end in `\n` or `\r\n`.
+- Spaces around an unquoted cell are dropped, so `name, age` has the columns `name` and `age`. A quoted cell keeps its spaces.
 - Blank lines are skipped, except in a one-column table. There a blank line is a row with an empty cell, since that's how `sqlite3 -csv` and `psql --csv` write NULL.
 - Empty and missing cells are null.
 - A column holds numbers if every non-empty cell is a JSON number that writes back exactly as written (`412`, `-2.5`), and booleans likewise (`true`, `false`). Any other column holds text, so `02134` and `1.50` show as written.
