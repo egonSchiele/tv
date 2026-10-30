@@ -260,9 +260,13 @@ fn infer_columns(rows: &[Row]) -> Vec<Column> {
 
 /// `Number` or `Bool` if every non-null value is one; otherwise `String`.
 fn infer_type(rows: &[Row], column: &str) -> ColumnType {
-    let mut kinds = rows
-        .iter()
-        .filter_map(|row| row.get(column))
+    values_type(rows.iter().filter_map(|row| row.get(column)))
+}
+
+/// `infer_type` for any values. CSV's cells use it too (`formats.rs`).
+pub fn values_type<'a>(values: impl IntoIterator<Item = &'a Value>) -> ColumnType {
+    let mut kinds = values
+        .into_iter()
         .filter(|value| !value.is_null())
         .map(scalar_type);
     match kinds.next() {
@@ -575,6 +579,23 @@ mod tests {
         assert!(Table::parse(lines).is_err());
         let table = Table::parse_input(lines, meta(None, Some("id")), Meta::default()).unwrap();
         assert_eq!(table.row_id(1), "b");
+    }
+
+    #[test]
+    fn csv_columns_get_types() {
+        let table =
+            Table::parse_input("id,n\na,1\nb,2\n", Meta::default(), Meta::default()).unwrap();
+        assert_eq!(column_names(&table), ["id", "n"]);
+        let kinds: Vec<_> = table.columns.iter().map(|column| column.kind).collect();
+        assert_eq!(kinds, [Some(ColumnType::String), Some(ColumnType::Number)]);
+    }
+
+    #[test]
+    fn a_csv_key_is_validated_like_any_other() {
+        let error =
+            Table::parse_input("id\na\na\n", meta(None, Some("id")), Meta::default()).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("duplicate key value \"a\""), "{message}");
     }
 
     #[test]

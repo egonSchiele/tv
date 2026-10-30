@@ -5,17 +5,25 @@
 //! "Input formats" in `docs/schema.md`.
 
 use anyhow::bail;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
+
+use crate::table::{ColumnType, values_type};
 
 /// `text` as the JSON `Table` reads: the table format, or an array of rows.
+/// The first non-blank line decides the format: `{` or `[` starts JSON, and
+/// anything else is CSV, TSV or the like.
 pub fn to_json(text: &str) -> anyhow::Result<Value> {
     // Excel and other Windows tools start UTF-8 files with a byte order
     // mark, which none of the formats expects.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    if text.trim().is_empty() {
+    let Some(first) = text.lines().map(str::trim).find(|line| !line.is_empty()) else {
         bail!("the input is empty");
+    };
+    if first.starts_with(['{', '[']) {
+        json(text)
+    } else {
+        delimited(text, delimiter(first))
     }
-    json(text)
 }
 
 /// One JSON value, or several in a row: JSON Lines, `jq`'s output, or
@@ -62,13 +70,194 @@ fn is_rows(value: &Value) -> bool {
         .is_some_and(|items| !items.is_empty() && items.iter().all(Value::is_object))
 }
 
+/// One line of CSV, TSV or Markdown, split into cells.
+struct Record {
+    /// The line it starts on, counting from 1, for errors.
+    line: usize,
+    cells: Vec<String>,
+}
+
+/// Whichever of comma, tab, semicolon and `|` the header line has most of.
+/// A tie goes to the earlier one, so a line with none is one column of CSV.
+fn delimiter(header: &str) -> char {
+    [',', '\t', ';', '|']
+        .into_iter()
+        .min_by_key(|&delimiter| std::cmp::Reverse(header.matches(delimiter).count()))
+        .unwrap_or(',')
+}
+
+/// CSV, TSV and the like: a header line, then a line per row.
+fn delimited(text: &str, delimiter: char) -> anyhow::Result<Value> {
+    let records = split_records(text, delimiter)?;
+    let Some((header, rows)) = records.split_first() else {
+        bail!("the input is empty");
+    };
+    // Without this, any line of text would be a table with one column and
+    // no rows: an error message piped in by mistake, say.
+    if header.cells.len() == 1 && rows.is_empty() {
+        bail!("not a table: one line of text, with nothing to split it into columns");
+    }
+    table_from_records(header, rows)
+}
+
+/// Split `text` into records, as RFC 4180 describes CSV. A field that starts
+/// with `"` is quoted: it can hold the delimiter and line breaks, and `""`
+/// in it is one `"`. A `"` anywhere else is just a character. Lines end in
+/// `\n` or `\r\n`, and blank lines are skipped.
+fn split_records(text: &str, delimiter: char) -> anyhow::Result<Vec<Record>> {
+    let mut records = Vec::new();
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut line = 1;
+    let mut record_line = 1;
+    // The line a quoted field started on, while inside it.
+    let mut quote_line = None;
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if quote_line.is_some() {
+            match character {
+                '"' if chars.next_if_eq(&'"').is_some() => cell.push('"'),
+                '"' => quote_line = None,
+                _ => {
+                    if character == '\n' {
+                        line += 1;
+                    }
+                    cell.push(character);
+                }
+            }
+            continue;
+        }
+        match character {
+            '"' if cell.is_empty() => quote_line = Some(line),
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\n' => {
+                cells.push(std::mem::take(&mut cell));
+                push_record(&mut records, record_line, std::mem::take(&mut cells));
+                line += 1;
+                record_line = line;
+            }
+            _ if character == delimiter => cells.push(std::mem::take(&mut cell)),
+            _ => cell.push(character),
+        }
+    }
+    if let Some(line) = quote_line {
+        bail!("line {line}: a quoted field has no closing quote");
+    }
+    cells.push(cell);
+    push_record(&mut records, record_line, cells);
+    Ok(records)
+}
+
+/// Add a record, unless it's a blank line: one empty cell.
+fn push_record(records: &mut Vec<Record>, line: usize, cells: Vec<String>) {
+    if !matches!(cells.as_slice(), [only] if only.is_empty()) {
+        records.push(Record { line, cells });
+    }
+}
+
+/// The table for a header and the rows under it, whose cells are all text.
+/// Columns are declared, so a column with no values still shows. Empty and
+/// missing cells are null. A column whose cells are all numbers, or all
+/// booleans, holds those (see `scalar`); any other column holds text.
+fn table_from_records(header: &Record, rows: &[Record]) -> anyhow::Result<Value> {
+    let names = column_names(&header.cells);
+    for row in rows {
+        // A trailing delimiter leaves empty cells past the header's, which
+        // are harmless. Anything else past it has no column to go in.
+        let extra = row.cells.get(names.len()..).unwrap_or_default();
+        if extra.iter().any(|cell| !cell.is_empty()) {
+            bail!(
+                "line {}: {} cells, but the header has {}",
+                row.line,
+                row.cells.len(),
+                names.len()
+            );
+        }
+    }
+    let typed: Vec<bool> = (0..names.len())
+        .map(|index| all_scalars(rows.iter().filter_map(|row| row.cells.get(index))))
+        .collect();
+    let rows: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            let cells = names
+                .iter()
+                .zip(&typed)
+                .enumerate()
+                .map(|(index, (name, &typed))| {
+                    (name.clone(), cell_value(row.cells.get(index), typed))
+                });
+            Value::Object(cells.collect())
+        })
+        .collect();
+    let columns: Vec<Value> = names.iter().map(|name| json!({ "name": name })).collect();
+    Ok(json!({ "columns": columns, "rows": rows }))
+}
+
+/// Header cells as column names. A row holds one value per name, so an empty
+/// one becomes `column_<n>` (counting from 1), and a repeat gets `_2`, `_3`, ….
+fn column_names(header: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for (index, cell) in header.iter().enumerate() {
+        let base = if cell.is_empty() {
+            format!("column_{}", index + 1)
+        } else {
+            cell.clone()
+        };
+        let mut name = base.clone();
+        let mut suffix = 2;
+        while names.contains(&name) {
+            name = format!("{base}_{suffix}");
+            suffix += 1;
+        }
+        names.push(name);
+    }
+    names
+}
+
+/// Whether a column's non-empty cells are all numbers, or all booleans: each
+/// one is a `scalar`, and `values_type` gives them a type.
+fn all_scalars<'a>(cells: impl Iterator<Item = &'a String>) -> bool {
+    let values: Option<Vec<Value>> = cells
+        .filter(|cell| !cell.is_empty())
+        .map(|cell| scalar(cell))
+        .collect();
+    values.is_some_and(|values| values_type(&values) != ColumnType::String)
+}
+
+/// A cell's value: null if it's empty or missing, its `scalar` in a `typed`
+/// column, and its text otherwise.
+fn cell_value(cell: Option<&String>, typed: bool) -> Value {
+    match cell.map(String::as_str) {
+        None | Some("") => Value::Null,
+        Some(text) if typed => scalar(text).unwrap_or_else(|| text.into()),
+        Some(text) => text.into(),
+    }
+}
+
+/// A cell's text as a JSON number or boolean, if it is one and writes back
+/// as exactly the same text: `412`, `-2.5`, `true`. Not `02134` (not JSON),
+/// `1.50` (it would show as `1.5`), or a number with more digits than a
+/// float keeps. So a column is never shown differently from the file.
+fn scalar(text: &str) -> Option<Value> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let is_scalar = matches!(value, Value::Number(_) | Value::Bool(_));
+    // Not `value == text`, which clippy suggests: that compares the value
+    // with a JSON string, so no number would ever match.
+    let written = value.to_string();
+    (is_scalar && written == text).then_some(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn error(text: &str) -> String {
         format!("{:#}", to_json(text).unwrap_err())
+    }
+
+    fn rows(text: &str) -> Value {
+        to_json(text).unwrap()["rows"].clone()
     }
 
     // JSON
@@ -152,5 +341,128 @@ mod tests {
     #[test]
     fn a_byte_order_mark_is_skipped() {
         assert_eq!(to_json("\u{feff}[{\"a\": 1}]").unwrap(), json!([{"a": 1}]));
+        assert_eq!(
+            to_json("\u{feff}a,b\n1,2").unwrap()["columns"][0]["name"],
+            "a"
+        );
+    }
+
+    // CSV and TSV
+
+    #[test]
+    fn csv_has_a_header_then_rows() {
+        let table = to_json("name,age\nsam,41\njo,7\n").unwrap();
+        assert_eq!(
+            table,
+            json!({
+                "columns": [{"name": "name"}, {"name": "age"}],
+                "rows": [{"name": "sam", "age": 41}, {"name": "jo", "age": 7}]
+            })
+        );
+    }
+
+    #[test]
+    fn the_header_line_picks_the_delimiter() {
+        assert_eq!(rows("a\tb\n1\t2"), json!([{"a": 1, "b": 2}]));
+        assert_eq!(rows("a;b\n1,5;2"), json!([{"a": "1,5", "b": 2}]));
+        assert_eq!(rows("a|b\n1|2"), json!([{"a": 1, "b": 2}]));
+        // Most wins: a tab-separated header with a comma in one name.
+        assert_eq!(
+            rows("a,x\tb\tc\n1\t2\t3"),
+            json!([{"a,x": 1, "b": 2, "c": 3}])
+        );
+        // None: one column.
+        assert_eq!(
+            rows("name\nsam\njo"),
+            json!([{"name": "sam"}, {"name": "jo"}])
+        );
+    }
+
+    #[test]
+    fn quoted_fields_hold_delimiters_quotes_and_newlines() {
+        let text = "a,b\r\n\"x, y\",\"say \"\"hi\"\"\"\r\n\"two\nlines\",5 \"in\"\r\n";
+        assert_eq!(
+            rows(text),
+            json!([
+                {"a": "x, y", "b": "say \"hi\""},
+                {"a": "two\nlines", "b": "5 \"in\""}
+            ])
+        );
+    }
+
+    #[test]
+    fn an_unclosed_quote_names_its_line() {
+        assert_eq!(
+            error("a,b\n1,2\n3,\"oops\n4,5\n"),
+            "line 3: a quoted field has no closing quote"
+        );
+    }
+
+    #[test]
+    fn a_column_is_numbers_only_if_every_cell_reads_back_the_same() {
+        let text = "n,zip,price,big,flag,mixed\n\
+                    1,02134,1.50,123456789012345678901,true,1\n\
+                    -2.5,10001,2.25,1,false,true\n";
+        let parsed = rows(text);
+        assert_eq!(
+            parsed[0],
+            json!({"n": 1, "zip": "02134", "price": "1.50",
+                   "big": "123456789012345678901", "flag": true, "mixed": "1"})
+        );
+        assert_eq!(
+            parsed[1],
+            json!({"n": -2.5, "zip": "10001", "price": "2.25",
+                   "big": "1", "flag": false, "mixed": "true"})
+        );
+    }
+
+    #[test]
+    fn empty_and_missing_cells_are_null() {
+        assert_eq!(
+            rows("a,b,c\n1,,x\n2\n"),
+            json!([{"a": 1, "b": null, "c": "x"}, {"a": 2, "b": null, "c": null}])
+        );
+    }
+
+    #[test]
+    fn blank_lines_are_skipped_and_errors_count_them() {
+        assert_eq!(rows("\na,b\n\n1,2\n\n"), json!([{"a": 1, "b": 2}]));
+        assert_eq!(
+            error("a,b\n\n1,2,3\n"),
+            "line 3: 3 cells, but the header has 2"
+        );
+    }
+
+    #[test]
+    fn extra_cells_are_an_error_unless_empty() {
+        assert_eq!(rows("a,b\n1,2,\n"), json!([{"a": 1, "b": 2}]));
+    }
+
+    #[test]
+    fn empty_and_repeated_names_are_made_unique() {
+        let table = to_json("a,,a,a_2,a\n1,2,3,4,5\n").unwrap();
+        let names: Vec<&str> = table["columns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|column| column["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["a", "column_2", "a_2", "a_2_2", "a_3"]);
+    }
+
+    #[test]
+    fn a_header_alone_is_a_table_with_no_rows() {
+        let table = to_json("a,b\n").unwrap();
+        assert_eq!(
+            table,
+            json!({"columns": [{"name": "a"}, {"name": "b"}], "rows": []})
+        );
+    }
+
+    #[test]
+    fn one_line_of_plain_text_is_not_a_table() {
+        for text in ["not json", "5", "\"quoted, still one cell\"\n"] {
+            assert!(error(text).starts_with("not a table"), "{text}");
+        }
     }
 }
