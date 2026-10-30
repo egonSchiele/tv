@@ -661,28 +661,28 @@ mod tests {
     /// Every `tv` command in the guide's `sh` blocks parses, so the guide
     /// can't drift from the CLI. In a pipeline, the other commands (`gh`,
     /// `jq`) are skipped. Code blocks are `sh` or `json`, so a block can't be
-    /// skipped by being labelled something else.
+    /// skipped by being labelled something else, or nothing.
     #[test]
     fn the_guides_examples_parse() {
-        let mut in_sh = false;
+        let mut block = None; // the open code block's language
         for line in skills::guide().lines() {
-            match line {
-                "```sh" => in_sh = true,
-                "```json" | "```" => in_sh = false,
-                fence if fence.starts_with("```") => panic!("not sh or json: {fence}"),
-                _ if in_sh => {
-                    let commands: Vec<&str> = line
-                        .split(" | ")
-                        .filter(|command| command.starts_with("tv "))
-                        .collect();
-                    assert!(!commands.is_empty(), "no tv command: {line}");
-                    for command in commands {
-                        if let Err(error) = Cli::try_parse_from(shell_words(command)) {
-                            panic!("{line}\n{error}");
-                        }
+            if let Some(language) = line.strip_prefix("```") {
+                block = match (block, language) {
+                    (None, "sh" | "json") => Some(language),
+                    (Some(_), "") => None,
+                    _ => panic!("not an sh or json block: {line}"),
+                };
+            } else if block == Some("sh") {
+                let commands: Vec<&str> = line
+                    .split(" | ")
+                    .filter(|command| command.starts_with("tv "))
+                    .collect();
+                assert!(!commands.is_empty(), "no tv command: {line}");
+                for command in commands {
+                    if let Err(error) = Cli::try_parse_from(shell_words(command)) {
+                        panic!("{line}\n{error}");
                     }
                 }
-                _ => {}
             }
         }
     }

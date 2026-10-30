@@ -691,28 +691,28 @@ In `main.rs`'s test module:
     /// Every `tv` command in the guide's `sh` blocks parses, so the guide
     /// can't drift from the CLI. In a pipeline, the other commands (`gh`,
     /// `jq`) are skipped. Code blocks are `sh` or `json`, so a block can't be
-    /// skipped by being labelled something else.
+    /// skipped by being labelled something else, or nothing.
     #[test]
     fn the_guides_examples_parse() {
-        let mut in_sh = false;
+        let mut block = None; // the open code block's language
         for line in skills::guide().lines() {
-            match line {
-                "```sh" => in_sh = true,
-                "```json" | "```" => in_sh = false,
-                fence if fence.starts_with("```") => panic!("not sh or json: {fence}"),
-                _ if in_sh => {
-                    let commands: Vec<&str> = line
-                        .split(" | ")
-                        .filter(|command| command.starts_with("tv "))
-                        .collect();
-                    assert!(!commands.is_empty(), "no tv command: {line}");
-                    for command in commands {
-                        if let Err(error) = Cli::try_parse_from(shell_words(command)) {
-                            panic!("{line}\n{error}");
-                        }
+            if let Some(language) = line.strip_prefix("```") {
+                block = match (block, language) {
+                    (None, "sh" | "json") => Some(language),
+                    (Some(_), "") => None,
+                    _ => panic!("not an sh or json block: {line}"),
+                };
+            } else if block == Some("sh") {
+                let commands: Vec<&str> = line
+                    .split(" | ")
+                    .filter(|command| command.starts_with("tv "))
+                    .collect();
+                assert!(!commands.is_empty(), "no tv command: {line}");
+                for command in commands {
+                    if let Err(error) = Cli::try_parse_from(shell_words(command)) {
+                        panic!("{line}\n{error}");
                     }
                 }
-                _ => {}
             }
         }
     }
@@ -764,9 +764,9 @@ In `main.rs`'s test module:
 
 Notes:
 - The test module already imports `clap::CommandFactory`, which `Cli::command()` needs.
-- `the_guides_examples_parse` checks parsing only, not behavior. The manual check runs the examples for real. The guide has 13 `tv` commands today, on 11 lines. Both `get`s are first in a pipeline, so every piece of a pipeline is checked, not only the last. Splitting on `" | "` also splits the `jq` programs, which contain ` | ` inside their quotes. That's harmless: none of those pieces starts with `tv `, so they're skipped.
+- `the_guides_examples_parse` checks parsing only, not behavior. The manual check runs the examples for real. It tracks the open block's language, because a bare ```` ``` ```` both closes a block and opens one with no language. Matching each fence line on its own would read an unlabelled block's opening as a close, and skip the block. The guide has 13 `tv` commands today, on 11 lines. Both `get`s are first in a pipeline, so every piece of a pipeline is checked, not only the last. Splitting on `" | "` also splits the `jq` programs, which contain ` | ` inside their quotes. That's harmless: none of those pieces starts with `tv `, so they're skipped.
 - `the_guides_reference_matches_the_cli` compares sorted lists, so a missing line, a stale one, and a command listed twice all fail. A substring search would let a missing `comment` line pass, because `` - `tv agent comments `` starts with the same text. It also checks every `--flag` on a Reference line, since `--all` appears nowhere else. Both lists include `help`, since our `Help` is a real subcommand now.
-- In the scratch copy, I checked that each test fails when it should: with the `comment` line deleted, with `--all` renamed in the Reference, with both `get`s renamed, and with one block relabelled `bash`.
+- In the scratch copy, I checked that each test fails when it should: with the `comment` line deleted, with `--all` renamed in the Reference, with both `get`s renamed, with one block relabelled `bash`, and with one block's label removed.
 
 In `tests/cli.rs`:
 
