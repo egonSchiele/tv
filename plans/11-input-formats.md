@@ -92,7 +92,7 @@ Each format has a converter that turns the input into tv's JSON table format. Ev
    - The first line is always the header. Headerless CSV is Out of scope.
 9. **Markdown tables:**
    - A header row, a `|---|` row (with optional `:` for alignment, ignored, since numbers are right-aligned anyway), then rows.
-   - Every non-blank line must start with `|`, so text after the table is an error naming the line. Text above it is too: input whose first line isn't the table but that has a `|---|` row further down fails with the line where the table starts. Otherwise a copied agent reply would be read as a one-column CSV named after its first sentence. (Changed in review.) The closing `|` is optional. `\|` is a `|` inside a cell.
+   - Every non-blank line must start with `|`, so text after the table is an error naming the line. Text above it is too: input read as CSV that has a `|---|` row as a record of its own fails with the line where the table starts. A `|---|` line inside a quoted cell is part of that cell, so a table in an issue export's description column is just text. Otherwise a copied agent reply would be read as a one-column CSV named after its first sentence. (Changed in review.) The closing `|` is optional. `\|` is a `|` inside a cell.
    - Cells are trimmed, typed as in Decision 7, and formatting such as `**bold**` and backticks stays as written.
    - Differences from GitHub's spec: GFM ignores extra cells in a row, while tv uses Decision 8's rule. GFM also allows a table without a leading `|`; tv reads that as CSV.
 10. **A file's name is its title when nothing else gives one.** CSV has nowhere to put a title. Without this, every CSV session is untitled in the viewer, `tv ls` and `tv agent sessions`.
@@ -1288,10 +1288,14 @@ The review on PR #12 (2026-10-29) found four bugs and two doc gaps in `formats.r
    - Its comment and `docs/schema.md` now say what it catches: a line with no delimiter. A line with a comma is still a header with no rows, which an empty query result needs.
 2. **Spaces around unquoted cells** (`CSV: drop spaces around unquoted cells`). `name, age` gave a column ` age` holding ` 41` as text. `split_records` now reads into a `Cell { text, quoted }`. A space before an unquoted cell is skipped, so a quote after it still opens a quoted field. `Cell::finish` trims trailing spaces only if the cell wasn't quoted.
 3. **Integers past 2^53** (`CSV: integers past 2^53 stay text`). `scalar` rejects an integer whose magnitude is over `MAX_EXACT_INTEGER` (`1 << 53`), so its column stays text, as the doc comment promised.
-4. **Text above a Markdown table** (`Markdown: text above a table is an error`). `to_json` checks `markdown_below_text` before reading CSV. It finds a `|---|` row and returns the line above it. `is_divider_row` (non-empty, all dashes) is shared with `markdown`'s own divider check.
+4. **Text above a Markdown table** (`Markdown: text above a table is an error`, then `Markdown: look for a table under text in CSV records, not raw lines`). `delimited` fails if a row is a `|---|` row on its own: `Record::is_markdown_divider` is one cell that starts with `|` and passes `is_divider_row` (non-empty, all dashes), which `markdown`'s own divider check shares. The line before it is where the table starts.
+   - The first version scanned raw lines in `to_json` (`markdown_below_text`). It rejected CSVs with a Markdown table inside a quoted cell, which issue and ticket exports often have.
+   - Checking records fixes that, since a line inside a quoted cell is never a record of its own.
+   - The `|---|` line has no comma, tab or semicolon, so it's one cell even when the text above has a comma ("Sure, here it is:").
+   - One limit: if the text above has a `|`, the delimiter guess is `|` and the divider splits into cells. That input still fails, as `4 cells, but the header has 2`.
 5. **The only-array rule's misses** (`Docs: where the only-array rule guesses wrong`): two lines in `docs/schema.md`'s JSON section, with the `jq` workaround for each.
 
-Tests after the review: 308 unit and 49 CLI.
+Tests after the review: 309 unit and 49 CLI.
 
 ## Out of scope
 

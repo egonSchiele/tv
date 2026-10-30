@@ -23,12 +23,6 @@ pub fn to_json(text: &str) -> anyhow::Result<Value> {
         json(text)
     } else if first.starts_with('|') {
         markdown(text)
-    } else if let Some(line) = markdown_below_text(text) {
-        // What copying an agent's reply along with its table gives. Read as
-        // CSV, it would be a table named after the reply's first sentence.
-        bail!(
-            "line {line}: a Markdown table starts here, after other text; remove the text above it"
-        );
     } else {
         delimited(text, delimiter(first))
     }
@@ -90,6 +84,15 @@ impl Record {
     fn is_blank(&self) -> bool {
         matches!(self.cells.as_slice(), [only] if only.is_empty())
     }
+
+    /// A Markdown table's `|---|` row, read as CSV: it has no comma, tab or
+    /// semicolon, so it's one cell. Inside a quoted cell it isn't a record
+    /// of its own, so it never matches there.
+    fn is_markdown_divider(&self) -> bool {
+        matches!(self.cells.as_slice(), [only] if only
+            .strip_prefix('|')
+            .is_some_and(|row| is_divider_row(&markdown_cells(row))))
+    }
 }
 
 /// Whichever of comma, tab, semicolon and `|` the header line has most of.
@@ -116,6 +119,16 @@ fn delimited(text: &str, delimiter: char) -> anyhow::Result<Value> {
     let rows: Vec<Record> = records
         .filter(|record| one_column || !record.is_blank())
         .collect();
+    // What copying an agent's reply along with its table gives: text, then a
+    // Markdown table. Read as CSV, it would be a table named after the
+    // reply's first sentence. The `|---|` row follows the header, so its
+    // line is at least 2.
+    if let Some(divider) = rows.iter().find(|row| row.is_markdown_divider()) {
+        bail!(
+            "line {}: a Markdown table starts here, after other text; remove the text above it",
+            divider.line - 1
+        );
+    }
     // Without this, a line of text with no delimiter in it, such as a
     // one-word message piped in by mistake, would be a table with one column
     // and no rows. A line with a delimiter is still a header with no rows,
@@ -265,18 +278,6 @@ fn markdown_cells(row: &str) -> Vec<String> {
         cells.push(cell);
     }
     cells.iter().map(|cell| cell.trim().to_string()).collect()
-}
-
-/// The line, counting from 1, where a Markdown table starts in `text`: the
-/// line above its `|---|` row. Only for text whose first line isn't the
-/// table's. `position` counts from 0, so the `|---|` row's index is the
-/// header's line number.
-fn markdown_below_text(text: &str) -> Option<usize> {
-    text.lines().position(|line| {
-        line.trim()
-            .strip_prefix('|')
-            .is_some_and(|row| is_divider_row(&markdown_cells(row)))
-    })
 }
 
 /// A Markdown `|---|` row's cells.
@@ -717,6 +718,19 @@ mod tests {
         assert_eq!(
             error("Sure, here it is:\n| a | b |\n|---|---|\n"),
             "line 2: a Markdown table starts here, after other text; remove the text above it"
+        );
+    }
+
+    #[test]
+    fn a_markdown_table_in_a_quoted_cell_is_just_text() {
+        // Issue trackers' CSV exports often have one in a description.
+        let text = "number,body\n1,\"Steps:\n| a | b |\n|---|---|\n| 1 | 2 |\"\n2,plain\n";
+        assert_eq!(
+            rows(text),
+            json!([
+                {"number": 1, "body": "Steps:\n| a | b |\n|---|---|\n| 1 | 2 |"},
+                {"number": 2, "body": "plain"}
+            ])
         );
     }
 }
