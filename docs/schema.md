@@ -63,6 +63,10 @@ A UTF-8 byte order mark is skipped. Empty input is an error.
 - **Several values in a row** (JSON Lines, `jq '.[]'` output, `gh api --paginate`): each object is a row, and each array's items are rows.
 - **One object without `rows`:** if its only array is a non-empty array of objects, as in `{"kind": "List", "items": [...]}`, those are the rows. Otherwise the object is one row, and the record view (`r`) shows it a field per line.
 
+  This is a guess, and two cases fool it:
+  - A record with one array of objects is unwrapped. `gh pr view 12 --json title,labels` shows the labels, not the PR. Wrap it in an array, with `jq '[.]'`, to see the record.
+  - Pages of a wrapped list aren't unwrapped, since the rule is for a lone object. `gh api --paginate search/issues` shows a row per page. Add `--jq '.items[]'` to get the items.
+
 ### CSV and TSV
 
 - The first line is the header.
