@@ -476,6 +476,8 @@ fn agent_push_reads_every_format_and_keeps_the_key() {
         // CSV and TSV
         "number,title\n1,a\n2,b\n",
         "number\ttitle\n1\ta\n2\tb\n",
+        // A Markdown table
+        "| number | title |\n|---|---|\n| 1 | a |\n| 2 | b |\n",
     ];
     let expected = serde_json::json!([{"number": 1, "title": "a"}, {"number": 2, "title": "b"}]);
     for input in inputs {

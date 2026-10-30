@@ -10,8 +10,8 @@ use serde_json::{Map, Value, json};
 use crate::table::{ColumnType, values_type};
 
 /// `text` as the JSON `Table` reads: the table format, or an array of rows.
-/// The first non-blank line decides the format: `{` or `[` starts JSON, and
-/// anything else is CSV, TSV or the like.
+/// The first non-blank line decides the format: `{` or `[` starts JSON, `|`
+/// starts a Markdown table, and anything else is CSV, TSV or the like.
 pub fn to_json(text: &str) -> anyhow::Result<Value> {
     // Excel and other Windows tools start UTF-8 files with a byte order
     // mark, which none of the formats expects.
@@ -21,6 +21,8 @@ pub fn to_json(text: &str) -> anyhow::Result<Value> {
     };
     if first.starts_with(['{', '[']) {
         json(text)
+    } else if first.starts_with('|') {
+        markdown(text)
     } else {
         delimited(text, delimiter(first))
     }
@@ -153,6 +155,68 @@ fn push_record(records: &mut Vec<Record>, line: usize, cells: Vec<String>) {
     if !matches!(cells.as_slice(), [only] if only.is_empty()) {
         records.push(Record { line, cells });
     }
+}
+
+/// A Markdown pipe table: a header row, a `|---|` row under it, then the
+/// rows. Every non-blank line starts with `|`, the closing `|` is optional,
+/// and `\|` is a `|` inside a cell. Cells are trimmed, and formatting such
+/// as `**bold**` stays as written.
+fn markdown(text: &str) -> anyhow::Result<Value> {
+    let mut records = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some(row) = line.strip_prefix('|') else {
+            bail!(
+                "line {}: every line of a Markdown table starts with |",
+                index + 1
+            );
+        };
+        records.push(Record {
+            line: index + 1,
+            cells: markdown_cells(row),
+        });
+    }
+    let [header, divider, rows @ ..] = records.as_slice() else {
+        bail!("a Markdown table needs a header row and a |---| row under it");
+    };
+    if !divider.cells.iter().all(|cell| is_divider(cell)) {
+        bail!(
+            "line {}: a Markdown table needs a |---| row under its header",
+            divider.line
+        );
+    }
+    table_from_records(header, rows)
+}
+
+/// A Markdown row's cells, from the text after its opening `|`.
+fn markdown_cells(row: &str) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut chars = row.chars().peekable();
+    while let Some(character) = chars.next() {
+        match character {
+            '\\' if chars.next_if_eq(&'|').is_some() => cell.push('|'),
+            '|' => cells.push(std::mem::take(&mut cell)),
+            _ => cell.push(character),
+        }
+    }
+    // The line is trimmed, so text after the last `|` is a cell, and nothing
+    // after it means that `|` closed the row.
+    if !cell.is_empty() {
+        cells.push(cell);
+    }
+    cells.iter().map(|cell| cell.trim().to_string()).collect()
+}
+
+/// A divider row's cell: dashes, with an optional `:` at either end for
+/// alignment, which tv ignores (numbers are right-aligned anyway).
+fn is_divider(cell: &str) -> bool {
+    let cell = cell.strip_prefix(':').unwrap_or(cell);
+    let cell = cell.strip_suffix(':').unwrap_or(cell);
+    !cell.is_empty() && cell.chars().all(|character| character == '-')
 }
 
 /// The table for a header and the rows under it, whose cells are all text.
@@ -464,5 +528,51 @@ mod tests {
         for text in ["not json", "5", "\"quoted, still one cell\"\n"] {
             assert!(error(text).starts_with("not a table"), "{text}");
         }
+    }
+
+    // Markdown
+
+    #[test]
+    fn markdown_tables_are_read() {
+        let text = "\
+| name | age | note |
+|:-----|----:|:----:|
+| sam  | 41  | **a** \\| b |
+| jo   |     |
+";
+        assert_eq!(
+            to_json(text).unwrap(),
+            json!({
+                "columns": [{"name": "name"}, {"name": "age"}, {"name": "note"}],
+                "rows": [
+                    {"name": "sam", "age": 41, "note": "**a** | b"},
+                    {"name": "jo", "age": null, "note": null}
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn markdown_without_closing_pipes() {
+        assert_eq!(
+            rows("| a | b\n|---|---\n| 1 | x\n"),
+            json!([{"a": 1, "b": "x"}])
+        );
+    }
+
+    #[test]
+    fn markdown_needs_the_divider_and_leading_pipes() {
+        assert_eq!(
+            error("| a |\n| 1 |\n"),
+            "line 2: a Markdown table needs a |---| row under its header"
+        );
+        assert_eq!(
+            error("| a |\n"),
+            "a Markdown table needs a header row and a |---| row under it"
+        );
+        assert_eq!(
+            error("| a |\n|---|\n| 1 |\nSome text after.\n"),
+            "line 4: every line of a Markdown table starts with |"
+        );
     }
 }
