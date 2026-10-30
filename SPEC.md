@@ -215,7 +215,7 @@ All commands print JSON unless noted: one line of compact JSON, which costs an a
 
 ### `tv agent help`
 
-Prints the agent guide as plain text (see below). The guide is embedded in the binary with `include_str!`.
+Prints the agent guide (see below). The guide is the body of the bundled `tv-tables` skill, `skills/tv-tables/SKILL.md`, embedded with `include_str!`, so an agent with the skill installed has read the same text. It's Markdown, wrapped at 80 columns to read as plain text. `tv --help` and `tv agent --help` point to it.
 
 ### `tv agent new [FILE] [--title T] [--key K]`
 
@@ -320,6 +320,8 @@ Short and example-driven. It should cover:
 9. **Don't poll.** Only check comments or focus when the user asks or refers to the table.
 10. **Reference:** one line per command with its arguments.
 
+It also covers what agents trip over: quoting row IDs that start with `#` and comment text, `push` keeping the key and title (`"key": null` drops the key), dropping `columns` with `del(.columns)` when adding or renaming a field (`get` prints `columns`, and declared columns turn off inference), giving the user `open_command` exactly as printed, and `goto` waiting for the grid. A unit test parses every command in its `sh` blocks and checks that its Reference lists every `tv agent` command, and the flags it names.
+
 ## Implementation
 
 ### Stack
@@ -351,7 +353,7 @@ src/
   time.rs          # RFC 3339 timestamps (ls, view.json, comments)
   comments.rs      # comment events and threads, the log's line format, folding events into threads
   agent.rs         # tv agent subcommands: their clap definitions and JSON output
-  skills.rs        # bundled skills (tv skills)
+  skills.rs        # bundled skills (tv skills) and the guide tv agent help prints
   viewer/
     mod.rs         # terminal setup/teardown, event loop (key events + 250ms tick)
     app.rs         # App state: table, cursor, scroll, mode (Grid/Detail/Record/Command/Comment/ConfirmDelete/Help), highlights, comment threads
@@ -370,6 +372,7 @@ Keep `render` pure (state in, frame out) and keep all mutation in `app.rs`. This
 - Unit tests: table inference and validation, row ID derivation, comment folding (awaiting/orphaned/deleted), column width and visible-range calculation.
 - Render snapshots: ratatui `TestBackend` rendered to text and compared to a committed `.txt` file (`make snapshots` rewrites them; review with `git diff`) for the grid, truncation, pinned column, comment markers, and record view.
 - CLI tests: `std::process::Command` on `env!("CARGO_BIN_EXE_tv")` with `TV_HOME` pointed at a temp dir; exercise new → push → comment → reply → save → open-file round trip.
+- Guide tests: unit tests parse every command in the agent guide's examples with the real CLI parser, and check its Reference against the `tv agent` subcommands and their flags.
 
 ## Milestones
 

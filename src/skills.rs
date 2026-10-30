@@ -1,6 +1,7 @@
-//! Agent skills bundled into the binary: `tv skills`. Each skill is a
-//! `skills/<name>/SKILL.md` in the repo, in the format agents such as Claude
-//! Code read: a `---` block with `name` and `description`, then Markdown.
+//! Agent skills bundled into the binary: `tv skills`, and the guide that
+//! `tv agent help` prints. Each skill is a `skills/<name>/SKILL.md` in the
+//! repo, in the format agents such as Claude Code read: a `---` block with
+//! `name` and `description`, then Markdown.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -11,7 +12,8 @@ use clap::Subcommand;
 
 use crate::files;
 
-/// The `tv-tables` skill: when and how to show the user a table in tv.
+/// The `tv-tables` skill. Its body is also `tv agent help`'s guide, so an
+/// agent that has the skill has read the guide.
 const TV_TABLES: &str = include_str!("../skills/tv-tables/SKILL.md");
 
 /// Every bundled skill's `SKILL.md`. To add a skill, add its file here.
@@ -37,14 +39,17 @@ struct Skill {
     description: &'static str,
     /// The whole file, as `show` prints it and `install` writes it.
     text: &'static str,
+    /// The Markdown after the frontmatter.
+    body: &'static str,
 }
 
 impl Skill {
-    /// Read `name` and `description` from `text`'s frontmatter, or `None`
-    /// unless it starts with a `---` block holding both. Only one-line
-    /// `key: value` fields are read, which is all the bundled skills use.
+    /// Split `text` into its frontmatter's `name` and `description` and its
+    /// body, or `None` unless it starts with a `---` block holding both. Only
+    /// one-line `key: value` fields are read, which is all the bundled skills
+    /// use.
     fn parse(text: &'static str) -> Option<Skill> {
-        let (header, _body) = text.strip_prefix("---\n")?.split_once("\n---\n")?;
+        let (header, body) = text.strip_prefix("---\n")?.split_once("\n---\n")?;
         let field = |key: &str| {
             header
                 .lines()
@@ -55,6 +60,7 @@ impl Skill {
             name: field("name")?,
             description: field("description")?,
             text,
+            body: body.trim_start_matches('\n'),
         })
     }
 }
@@ -74,6 +80,12 @@ fn find(name: &str) -> anyhow::Result<Skill> {
         Some(skill) => Ok(skill),
         None => bail!("no skill \"{name}\": `tv skills` lists them"),
     }
+}
+
+/// What `tv agent help` prints: the `tv-tables` skill without its
+/// frontmatter.
+pub fn guide() -> &'static str {
+    bundled(TV_TABLES).body
 }
 
 /// Run `tv skills` (no subcommand: list them) or one of its subcommands.
@@ -142,6 +154,7 @@ mod tests {
             let path = format!("skills/{}/SKILL.md", skill.name);
             assert_eq!(fs::read_to_string(&path).unwrap(), *text, "{path}");
             assert!(!skill.description.is_empty(), "{path}");
+            assert!(skill.body.starts_with("# "), "{path}");
             // Agents read the frontmatter as YAML, where `: ` is an error and
             // ` #` starts a comment. `parse` accepts both.
             assert!(
@@ -168,7 +181,10 @@ mod tests {
     #[test]
     fn parse_needs_a_name_and_a_description() {
         let skill = Skill::parse("---\nname: x\ndescription: does y\n---\n\n# X\n").unwrap();
-        assert_eq!((skill.name, skill.description), ("x", "does y"));
+        assert_eq!(
+            (skill.name, skill.description, skill.body),
+            ("x", "does y", "# X\n")
+        );
         assert!(Skill::parse("# no frontmatter\n").is_none());
         assert!(Skill::parse("---\nname: x\n---\n# X\n").is_none());
     }

@@ -1,5 +1,6 @@
 //! `tv agent`: the commands an agent runs. Each one prints one line of JSON
-//! on stdout. Errors go to stderr through `main`, with exit status 1.
+//! on stdout, except `help`. Errors go to stderr through `main`, with exit
+//! status 1.
 
 use std::io::{self, IsTerminal};
 use std::path::Path;
@@ -11,6 +12,7 @@ use serde_json::Value;
 
 use crate::comments::{self, Add, Author, Event, Log, Message, Thread};
 use crate::session::{COMMENTS_FILE, Goto, Session, Sessions};
+use crate::skills;
 use crate::table::{Meta, Row, Table};
 use crate::time;
 
@@ -62,6 +64,8 @@ pub enum AgentCommand {
         #[arg(long)]
         col: Option<String>,
     },
+    /// Print the guide: when to use tv, and how. Plain text, not JSON.
+    Help,
 }
 
 /// The table `new` and `push` read, and what to set on it.
@@ -111,6 +115,11 @@ pub fn run(sessions: &Sessions, command: &AgentCommand) -> anyhow::Result<()> {
     // Each arm serializes its own result: `Serialize` can't be a trait
     // object, so the arms can't return one shared type.
     let json = match command {
+        // The one command that isn't JSON: the guide is for reading.
+        AgentCommand::Help => {
+            print!("{}", skills::guide());
+            return Ok(());
+        }
         AgentCommand::New(input) => serde_json::to_string(&new(sessions, input)?)?,
         AgentCommand::Push { id, input } => serde_json::to_string(&push(sessions, id, input)?)?,
         AgentCommand::Get { id } => serde_json::to_string(&sessions.open(id)?.load_table()?)?,

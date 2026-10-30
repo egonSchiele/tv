@@ -979,7 +979,7 @@ fn agent_round_trip() {
     assert_eq!(agent(home, &["comments", reopened, "--all"], ""), all);
 }
 
-// `tv skills`
+// `tv skills` and `tv agent help`
 
 /// The bundled skill's file, as the repo has it.
 fn tv_tables() -> String {
@@ -1022,4 +1022,22 @@ fn skills_lists_shows_and_installs() {
     fs::write(&path, "my edits").unwrap();
     assert_fails_with(&install(), "move it aside");
     assert_eq!(fs::read_to_string(&path).unwrap(), "my edits");
+}
+
+#[test]
+fn agent_help_prints_the_skill_without_its_frontmatter() {
+    let home = tempfile::tempdir().unwrap();
+    let guide = succeeds(&tv(home.path(), &["agent", "help"], ""));
+    // The guide is the end of the file: everything after the frontmatter.
+    assert!(tv_tables().ends_with(&guide), "{guide}");
+    assert!(guide.starts_with("# tv"), "{guide}");
+}
+
+#[test]
+fn help_points_agents_at_the_guide() {
+    let home = tempfile::tempdir().unwrap();
+    for args in [&["--help"][..], &["agent", "--help"]] {
+        let help = succeeds(&tv(home.path(), args, ""));
+        assert!(help.contains("`tv agent help`"), "{args:?}: {help}");
+    }
 }
