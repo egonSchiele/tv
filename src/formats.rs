@@ -23,6 +23,12 @@ pub fn to_json(text: &str) -> anyhow::Result<Value> {
         json(text)
     } else if first.starts_with('|') {
         markdown(text)
+    } else if let Some(line) = markdown_below_text(text) {
+        // What copying an agent's reply along with its table gives. Read as
+        // CSV, it would be a table named after the reply's first sentence.
+        bail!(
+            "line {line}: a Markdown table starts here, after other text; remove the text above it"
+        );
     } else {
         delimited(text, delimiter(first))
     }
@@ -232,7 +238,7 @@ fn markdown(text: &str) -> anyhow::Result<Value> {
     let [header, divider, rows @ ..] = records.as_slice() else {
         bail!("a Markdown table needs a header row and a |---| row under it");
     };
-    if !divider.cells.iter().all(|cell| is_divider(cell)) {
+    if !is_divider_row(&divider.cells) {
         bail!(
             "line {}: a Markdown table needs a |---| row under its header",
             divider.line
@@ -259,6 +265,23 @@ fn markdown_cells(row: &str) -> Vec<String> {
         cells.push(cell);
     }
     cells.iter().map(|cell| cell.trim().to_string()).collect()
+}
+
+/// The line, counting from 1, where a Markdown table starts in `text`: the
+/// line above its `|---|` row. Only for text whose first line isn't the
+/// table's. `position` counts from 0, so the `|---|` row's index is the
+/// header's line number.
+fn markdown_below_text(text: &str) -> Option<usize> {
+    text.lines().position(|line| {
+        line.trim()
+            .strip_prefix('|')
+            .is_some_and(|row| is_divider_row(&markdown_cells(row)))
+    })
+}
+
+/// A Markdown `|---|` row's cells.
+fn is_divider_row(cells: &[String]) -> bool {
+    !cells.is_empty() && cells.iter().all(|cell| is_divider(cell))
 }
 
 /// A divider row's cell: dashes, with an optional `:` at either end for
@@ -681,6 +704,19 @@ mod tests {
         assert_eq!(
             error("| a |\n|---|\n| 1 |\nSome text after.\n"),
             "line 4: every line of a Markdown table starts with |"
+        );
+    }
+
+    #[test]
+    fn text_above_a_markdown_table_is_an_error() {
+        assert_eq!(
+            error("Here's the table:\n\n| a | b |\n|---|---|\n| 1 | 2 |\n"),
+            "line 3: a Markdown table starts here, after other text; remove the text above it"
+        );
+        // A comma in the text would otherwise make it a two-column header.
+        assert_eq!(
+            error("Sure, here it is:\n| a | b |\n|---|---|\n"),
+            "line 2: a Markdown table starts here, after other text; remove the text above it"
         );
     }
 }

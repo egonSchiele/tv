@@ -78,7 +78,7 @@ A UTF-8 byte order mark is skipped. Empty input is an error.
 ### Markdown tables
 
 - A header row, a `|---|` row under it (`:` for alignment is allowed and ignored), then the rows.
-- Every non-blank line starts with `|`. The closing `|` is optional. `\|` is a `|` inside a cell.
+- Every non-blank line starts with `|`, so text above or below the table is an error. When you copy an agent's reply along with its table, copy only the table. The closing `|` is optional. `\|` is a `|` inside a cell.
 - Cells are trimmed and typed like CSV's. Formatting such as `**bold**` stays as written.
 
 ### Titles
