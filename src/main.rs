@@ -7,6 +7,7 @@ mod agent;
 mod comments;
 mod files;
 mod session;
+mod skills;
 #[cfg(test)]
 mod snapshot;
 mod table;
@@ -25,7 +26,12 @@ use viewer::layout::{Align, display_width, fit};
 // `tv open x.json` both work: a subcommand name wins, and anything else is the
 // target. `args_conflicts_with_subcommands` makes `tv x.json open y.json` an
 // error instead of silently accepting both.
-#[command(name = "tv", version, args_conflicts_with_subcommands = true)]
+#[command(
+    name = "tv",
+    version,
+    args_conflicts_with_subcommands = true,
+    after_help = "Agents: `tv agent help` is a guide to using tv."
+)]
 struct Cli {
     /// A JSON file to open (`.` or `/` in the name), `-` to read stdin, or a
     /// session ID. With none, the most recent session. Same as `tv open`.
@@ -51,10 +57,21 @@ enum Command {
     },
     /// Write a session's table, comments included, to a JSON file.
     Save { id: String, path: String },
-    /// Commands for agents. Each prints one line of JSON.
+    /// Commands for agents. Each prints one line of JSON, except `help`.
+    // clap adds a `help` subcommand to every group, which would shadow
+    // `AgentCommand::Help`. `tv agent --help` still prints clap's help.
+    #[command(
+        disable_help_subcommand = true,
+        after_help = "`tv agent help` is a guide to using tv: when, and how."
+    )]
     Agent {
         #[command(subcommand)]
         command: agent::AgentCommand,
+    },
+    /// Agent skills that come with tv: list them, print one, or install one.
+    Skills {
+        #[command(subcommand)]
+        command: Option<skills::SkillsCommand>,
     },
     /// Session maintenance.
     Session {
@@ -383,6 +400,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Rm { ids, force }) => rm(&sessions, ids, *force),
         Some(Command::Save { id, path }) => save(&sessions, id, path),
         Some(Command::Agent { command }) => agent::run(&sessions, command),
+        Some(Command::Skills { command }) => skills::run(command.as_ref()),
         Some(Command::Session {
             command:
                 SessionCommand::Prune {
@@ -598,5 +616,118 @@ mod tests {
     fn format_table_leaves_no_trailing_spaces() {
         let text = format_table(&[row(&["a", "long title"]), row(&["b", "x"])]);
         assert!(text.lines().all(|line| !line.ends_with(' ')), "{text:?}");
+    }
+
+    /// `line` split into words the way a POSIX shell splits the guide's
+    /// examples: spaces separate words, and '…' or "…" quote. The guide uses
+    /// no escapes or variables.
+    fn shell_words(line: &str) -> Vec<String> {
+        let mut words = Vec::new();
+        let mut word: Option<String> = None;
+        let mut quote = None;
+        for character in line.chars() {
+            match (quote, character) {
+                (Some(open), _) if character == open => quote = None,
+                (None, '\'' | '"') => {
+                    quote = Some(character);
+                    word.get_or_insert_default();
+                }
+                (None, ' ') => words.extend(word.take()),
+                _ => word.get_or_insert_default().push(character),
+            }
+        }
+        words.extend(word);
+        words
+    }
+
+    #[test]
+    fn shell_words_handles_quotes() {
+        assert_eq!(
+            shell_words(r#"tv agent reply k3f9x2 c1 "to match it" --row '#3' ''"#),
+            [
+                "tv",
+                "agent",
+                "reply",
+                "k3f9x2",
+                "c1",
+                "to match it",
+                "--row",
+                "#3",
+                ""
+            ]
+        );
+    }
+
+    /// Every `tv` command in the guide's `sh` blocks parses, so the guide
+    /// can't drift from the CLI. In a pipeline, the other commands (`gh`,
+    /// `jq`) are skipped. Code blocks are `sh` or `json`, so a block can't be
+    /// skipped by being labelled something else, or nothing.
+    #[test]
+    fn the_guides_examples_parse() {
+        let mut block = None; // the open code block's language
+        for line in skills::guide().lines() {
+            if let Some(language) = line.strip_prefix("```") {
+                block = match (block, language) {
+                    (None, "sh" | "json") => Some(language),
+                    (Some(_), "") => None,
+                    _ => panic!("not an sh or json block: {line}"),
+                };
+            } else if block == Some("sh") {
+                let commands: Vec<&str> = line
+                    .split(" | ")
+                    .filter(|command| command.starts_with("tv "))
+                    .collect();
+                assert!(!commands.is_empty(), "no tv command: {line}");
+                for command in commands {
+                    if let Err(error) = Cli::try_parse_from(shell_words(command)) {
+                        panic!("{line}\n{error}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The Reference has one line per `tv agent` command, and every `--flag`
+    /// on it is one that command takes.
+    #[test]
+    fn the_guides_reference_matches_the_cli() {
+        let cli = Cli::command();
+        let agent = cli.find_subcommand("agent").unwrap();
+        let mut listed = Vec::new();
+        for line in skills::guide().lines() {
+            let Some(usage) = line.strip_prefix("- `tv agent ") else {
+                continue;
+            };
+            let mut words = usage.split('`').next().unwrap().split(' ');
+            let name = words.next().unwrap();
+            let command = agent
+                .find_subcommand(name)
+                .unwrap_or_else(|| panic!("no such command: {line}"));
+            for flag in words.filter_map(|word| word.trim_matches(['[', ']']).strip_prefix("--")) {
+                let takes_it = command
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some(flag));
+                assert!(takes_it, "no --{flag}: {line}");
+            }
+            listed.push(name);
+        }
+        let mut commands: Vec<&str> = agent
+            .get_subcommands()
+            .map(clap::Command::get_name)
+            .collect();
+        listed.sort_unstable();
+        commands.sort_unstable();
+        assert_eq!(listed, commands);
+    }
+
+    #[test]
+    fn agent_help_is_the_guide_not_clap() {
+        let cli = Cli::try_parse_from(["tv", "agent", "help"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Agent {
+                command: agent::AgentCommand::Help
+            })
+        ));
     }
 }

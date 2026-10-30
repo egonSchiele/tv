@@ -153,6 +153,9 @@ On table reload:
 | `tv ls` | List sessions: id, title, rows × cols, whether a viewer is open, how many threads are awaiting a reply, last modified. |
 | `tv save <id> <file.json>` | Write table + comments to a file. |
 | `tv rm <id>… [--force]` | Delete sessions. Refuses a session whose viewer is open, unless `--force`. |
+| `tv skills` | List the agent skills that come with tv. |
+| `tv skills show <name>` | Print a skill's `SKILL.md`. |
+| `tv skills install <name> --to <dir>` | Write `<dir>/<name>/SKILL.md`, making the directories. It never replaces a file: the same text is fine, and different text is an error. |
 
 An argument to `tv open` is treated as a file if it contains `.` or `/`, and as a session ID otherwise.
 
@@ -212,7 +215,7 @@ All commands print JSON unless noted: one line of compact JSON, which costs an a
 
 ### `tv agent help`
 
-Prints the agent guide as plain text (see below). The guide is embedded in the binary with `include_str!`.
+Prints the agent guide (see below). The guide is the body of the bundled `tv-tables` skill, `skills/tv-tables/SKILL.md`, embedded with `include_str!`, so an agent with the skill installed has read the same text. It's Markdown, wrapped at 80 columns to read as plain text. `tv --help` and `tv agent --help` point to it.
 
 ### `tv agent new [FILE] [--title T] [--key K]`
 
@@ -317,6 +320,8 @@ Short and example-driven. It should cover:
 9. **Don't poll.** Only check comments or focus when the user asks or refers to the table.
 10. **Reference:** one line per command with its arguments.
 
+It also covers what agents trip over: quoting row IDs that start with `#` and comment text, `push` keeping the key and title (`"key": null` drops the key), dropping `columns` with `del(.columns)` when adding or renaming a field (`get` prints `columns`, and declared columns turn off inference), giving the user `open_command` exactly as printed, and `goto` waiting for the grid. A unit test parses every command in its `sh` blocks and checks that its Reference lists every `tv agent` command, and the flags it names.
+
 ## Implementation
 
 ### Stack
@@ -348,7 +353,7 @@ src/
   time.rs          # RFC 3339 timestamps (ls, view.json, comments)
   comments.rs      # comment events and threads, the log's line format, folding events into threads
   agent.rs         # tv agent subcommands: their clap definitions and JSON output
-  agent_help.txt   # guide text, include_str!'d
+  skills.rs        # bundled skills (tv skills) and the guide tv agent help prints
   viewer/
     mod.rs         # terminal setup/teardown, event loop (key events + 250ms tick)
     app.rs         # App state: table, cursor, scroll, mode (Grid/Detail/Record/Command/Comment/ConfirmDelete/Help), highlights, comment threads
@@ -358,6 +363,8 @@ src/
     diff.rs        # after a reload: where the cursor goes, which cells changed
 ```
 
+Skills live outside `src/`, one directory each: `skills/<name>/SKILL.md`. `skills.rs` `include_str!`s them.
+
 Keep `render` pure (state in, frame out) and keep all mutation in `app.rs`. This is the standard ratatui pattern and avoids borrow-checker trouble.
 
 ### Testing
@@ -365,6 +372,7 @@ Keep `render` pure (state in, frame out) and keep all mutation in `app.rs`. This
 - Unit tests: table inference and validation, row ID derivation, comment folding (awaiting/orphaned/deleted), column width and visible-range calculation.
 - Render snapshots: ratatui `TestBackend` rendered to text and compared to a committed `.txt` file (`make snapshots` rewrites them; review with `git diff`) for the grid, truncation, pinned column, comment markers, and record view.
 - CLI tests: `std::process::Command` on `env!("CARGO_BIN_EXE_tv")` with `TV_HOME` pointed at a temp dir; exercise new → push → comment → reply → save → open-file round trip.
+- Guide tests: unit tests parse every command in the agent guide's examples with the real CLI parser, and check its Reference against the `tv agent` subcommands and their flags.
 
 ## Milestones
 
@@ -388,6 +396,6 @@ Decisions made while planning. Work is tracked in the Linear project "table view
 - **Agent can move the cursor:** `tv agent goto`, under "Agent CLI". Reverses the "Not doing" entry above.
 - **Command line.** `:` opens a vim-style command line in the viewer. `:w [path]` saves, `:help`, `:q`. Single-key bindings from the Keys table remain as shortcuts. The command line is the extension point for future commands.
 - **Session pruning.** No automatic pruning. `tv session prune [--older-than 7d] [--closed] [--dry-run]` is explicit.
-- **Skills.** `tv skills` lists bundled agent skills; `tv skills show <name>` prints one; `tv skills install <name> --to <dir>` writes it out.
+- **Skills:** `tv skills`, under "Human CLI".
 - **Name.** The binary stays `tv`. The crates.io name `tv` is taken by tidy-viewer, so publish the crate under a different name (e.g. `tv-table`) with `[[bin]] name = "tv"`.
 - **Build tooling.** `make` builds, `make run` opens `examples/prs.json`, `make test` runs tests, `make check` runs fmt + clippy + tests (what CI runs).

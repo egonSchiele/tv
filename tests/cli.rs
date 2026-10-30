@@ -978,3 +978,66 @@ fn agent_round_trip() {
     assert_eq!(agent(home, &["get", reopened], ""), table);
     assert_eq!(agent(home, &["comments", reopened, "--all"], ""), all);
 }
+
+// `tv skills` and `tv agent help`
+
+/// The bundled skill's file, as the repo has it.
+fn tv_tables() -> String {
+    fs::read_to_string("skills/tv-tables/SKILL.md").unwrap()
+}
+
+#[test]
+fn skills_lists_shows_and_installs() {
+    let home = tempfile::tempdir().unwrap();
+    let listed = succeeds(&tv(home.path(), &["skills"], ""));
+    assert!(listed.starts_with("NAME"), "{listed}");
+    assert!(
+        listed.contains("\ntv-tables  Show tabular data"),
+        "{listed}"
+    );
+
+    let shown = succeeds(&tv(home.path(), &["skills", "show", "tv-tables"], ""));
+    assert_eq!(shown, tv_tables());
+    let output = tv(home.path(), &["skills", "show", "nope"], "");
+    assert_fails_with(&output, "no skill \"nope\"");
+
+    let to = home.path().join(".claude/skills");
+    let install = || {
+        tv(
+            home.path(),
+            &[
+                "skills",
+                "install",
+                "tv-tables",
+                "--to",
+                to.to_str().unwrap(),
+            ],
+            "",
+        )
+    };
+    assert!(succeeds(&install()).starts_with("installed tv-tables at "));
+    let path = to.join("tv-tables/SKILL.md");
+    assert_eq!(fs::read_to_string(&path).unwrap(), tv_tables());
+    assert!(succeeds(&install()).contains("already installed"));
+    fs::write(&path, "my edits").unwrap();
+    assert_fails_with(&install(), "move it aside");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "my edits");
+}
+
+#[test]
+fn agent_help_prints_the_skill_without_its_frontmatter() {
+    let home = tempfile::tempdir().unwrap();
+    let guide = succeeds(&tv(home.path(), &["agent", "help"], ""));
+    // The guide is the end of the file: everything after the frontmatter.
+    assert!(tv_tables().ends_with(&guide), "{guide}");
+    assert!(guide.starts_with("# tv"), "{guide}");
+}
+
+#[test]
+fn help_points_agents_at_the_guide() {
+    let home = tempfile::tempdir().unwrap();
+    for args in [&["--help"][..], &["agent", "--help"]] {
+        let help = succeeds(&tv(home.path(), args, ""));
+        assert!(help.contains("`tv agent help`"), "{args:?}: {help}");
+    }
+}
