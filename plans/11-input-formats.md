@@ -62,13 +62,14 @@ Each format has a converter that turns the input into tv's JSON table format. Ev
    - **One object with `rows`:** the full format, as today.
    - **One object without `rows`:** if its *only* array is a non-empty array of objects, those are the rows. That covers `kubectl get -o json` (`items`), the GitHub search API (`items`), Stripe (`data`) and Slack (`members`). Otherwise the object is one row, which the record view (`r`) shows a field per line. Without this rule, a one-line JSON Lines file would fail.
 
-     "Only array" is what keeps records from being unwrapped. A GitHub issue has `labels` and `assignees`, so it's one row, and a repo's `topics` holds strings, so it's one row too. It can still misfire: `gh issue view --json title,labels` has one array and shows the labels. `jq` fixes that, and it beats today's `missing field rows` error.
+     "Only array" is what keeps records from being unwrapped. A GitHub issue has `labels` and `assignees`, so it's one row, and a repo's `topics` holds strings, so it's one row too. It can still misfire: `gh issue view --json title,labels` has one array and shows the labels. And since the rule is for a lone object, pages of a wrapped list (`gh api --paginate search/issues`) are a row per page. `jq` fixes both (`jq '[.]'`, `--jq '.items[]'`), `docs/schema.md` says so, and it beats today's `missing field rows` error.
 
    Today every object without `rows` is an error, so no input that works today changes meaning.
 5. **CSV is parsed by about 40 lines of our own,** following RFC 4180:
    - A field that starts with `"` is quoted. It can hold the delimiter and line breaks, and `""` inside it is one `"`.
    - A `"` anywhere else is an ordinary character. This is the lenient choice the `csv` crate also makes.
-   - Lines end in `\n` or `\r\n`. Blank lines are skipped.
+   - Lines end in `\n` or `\r\n`. Blank lines are skipped, except in a one-column table, where a blank line is a row with an empty cell: that's how `sqlite3 -csv` and `psql --csv` write NULL. (Changed in review.)
+   - Spaces around an unquoted field are dropped, and spaces before an opening quote don't stop it being quoted, since people and agents write `name, age`. A quoted field keeps its spaces. RFC 4180 keeps them; this is friendlier, and matches Markdown's trimmed cells. (Changed in review.)
    - A quote that's never closed is an error naming the line it opened on.
 
    The `csv` crate would add 2 crates (`csv`, `csv-core`; 96 → 98 by README's count), with no build scripts. I measured it in a scratch copy. It's by the author of `memchr`, which is already in the tree. It's a fair fallback if edge cases pile up. But the parser is small and well specified, and the Markdown parser has to be ours anyway.
@@ -77,7 +78,8 @@ Each format has a converter that turns the input into tv's JSON table format. Ev
    - `|` is `sqlite3 -header`'s default output.
    - Counting characters in the raw line is a heuristic. A quoted header full of commas in a TSV could fool it, but rarely.
 7. **Cell types: a column is numbers only if every non-empty cell writes back as exactly the same text.** CSV cells are all text, so tv decides:
-   - Parse the cell as JSON. If it's a number or a boolean whose `to_string()` equals the cell, it converts. `412`, `-2.5`, `19.99` and `true` do. `02134` doesn't (not JSON), nor `1.50` (it would show as `1.5`), `123456789012345678901` (too many digits for a float), `+12` or `TRUE`.
+   - Parse the cell as JSON. If it's a number or a boolean whose `to_string()` equals the cell, it converts. `412`, `-2.5`, `19.99` and `true` do. `02134` doesn't (not JSON), nor `1.50` (it would show as `1.5`), `123456789012345678901` (too many digits to write back), `+12` or `TRUE`.
+   - An integer past 2^53 doesn't convert either, though serde_json writes any `u64` or `i64` back exactly. A 19-digit ID would show fine in tv, but `tv agent get` would hand an agent a number that a float-based JSON reader, like JavaScript's, rounds. (Changed in review.)
    - All-or-nothing per column: one cell that doesn't convert keeps the whole column as text. So the column's type is consistent, `tv agent get | jq` sees one type per column, and nothing is shown differently from the file.
    - "All one type" is `table.rs`'s own rule for inferring a column's type. It's split out of `infer_type` as `values_type`, so CSV's typing and the table's inference can't disagree.
    - Empty and missing cells are null: dimmed, and ignored by type inference.
@@ -90,7 +92,7 @@ Each format has a converter that turns the input into tv's JSON table format. Ev
    - The first line is always the header. Headerless CSV is Out of scope.
 9. **Markdown tables:**
    - A header row, a `|---|` row (with optional `:` for alignment, ignored, since numbers are right-aligned anyway), then rows.
-   - Every non-blank line must start with `|`, so text after the table is an error naming the line. The closing `|` is optional. `\|` is a `|` inside a cell.
+   - Every non-blank line must start with `|`, so text after the table is an error naming the line. Text above it is too: input whose first line isn't the table but that has a `|---|` row further down fails with the line where the table starts. Otherwise a copied agent reply would be read as a one-column CSV named after its first sentence. (Changed in review.) The closing `|` is optional. `\|` is a `|` inside a cell.
    - Cells are trimmed, typed as in Decision 7, and formatting such as `**bold**` and backticks stays as written.
    - Differences from GitHub's spec: GFM ignores extra cells in a row, while tv uses Decision 8's rule. GFM also allows a table without a leading `|`; tv reads that as CSV.
 10. **A file's name is its title when nothing else gives one.** CSV has nowhere to put a title. Without this, every CSV session is untitled in the viewer, `tv ls` and `tv agent sessions`.
@@ -1185,6 +1187,8 @@ A UTF-8 byte order mark is skipped. Empty input is an error.
 A file that names no title is titled with its file name, such as `sales.csv`. `--title`, the file's own `title`, and on `push` the session's title, all come first.
 ````
 
+The review on PR #12 changed this section's JSON, CSV and Markdown bullets; see "Changes from the PR review".
+
 Also replace the page's opening paragraph, which says the JSON format is the input to `new` and `push`, with: "`tv` writes tables as JSON, in the format below: it's what `tv save` and `tv agent get` print. It reads that format, and the [input formats](#input-formats) further down."
 
 ### `docs/SPEC.md`
@@ -1272,6 +1276,22 @@ Plus the manual check above.
   4. `Input: Markdown tables`: Part 3 (303, 48).
   5. `Input: a file's name is its title`: Part 4 (304, 49).
   6. `Docs: input formats`: Part 5. The guide test covers the new example.
+
+## Changes from the PR review
+
+The review on PR #12 (2026-10-29) found four bugs and two doc gaps in `formats.rs`. Each fix has a test that failed before it. Decisions 4, 5, 7 and 9 above describe the result; the code in Parts 2 and 3 is as first built, before these commits.
+
+1. **One-column CSV lost rows** (`CSV: a blank line is a row in a one-column table`). `sqlite3 -csv` and `psql --csv` write NULL as an empty field, which in a one-column result is a blank line, and `split_records` skipped blank lines. Now:
+   - `split_records` drops one final line break and keeps every other line, a blank one as a record of one empty cell.
+   - `delimited` skips blank records before the header, and after it only when the header has more than one column.
+   - The one-line rule fails when a one-column header has only blank rows.
+   - Its comment and `docs/schema.md` now say what it catches: a line with no delimiter. A line with a comma is still a header with no rows, which an empty query result needs.
+2. **Spaces around unquoted cells** (`CSV: drop spaces around unquoted cells`). `name, age` gave a column ` age` holding ` 41` as text. `split_records` now reads into a `Cell { text, quoted }`. A space before an unquoted cell is skipped, so a quote after it still opens a quoted field. `Cell::finish` trims trailing spaces only if the cell wasn't quoted.
+3. **Integers past 2^53** (`CSV: integers past 2^53 stay text`). `scalar` rejects an integer whose magnitude is over `MAX_EXACT_INTEGER` (`1 << 53`), so its column stays text, as the doc comment promised.
+4. **Text above a Markdown table** (`Markdown: text above a table is an error`). `to_json` checks `markdown_below_text` before reading CSV. It finds a `|---|` row and returns the line above it. `is_divider_row` (non-empty, all dashes) is shared with `markdown`'s own divider check.
+5. **The only-array rule's misses** (`Docs: where the only-array rule guesses wrong`): two lines in `docs/schema.md`'s JSON section, with the `jq` workaround for each.
+
+Tests after the review: 308 unit and 49 CLI.
 
 ## Out of scope
 
