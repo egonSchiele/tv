@@ -7,6 +7,7 @@ mod agent;
 mod comments;
 mod files;
 mod session;
+mod skills;
 #[cfg(test)]
 mod snapshot;
 mod table;
@@ -55,6 +56,11 @@ enum Command {
     Agent {
         #[command(subcommand)]
         command: agent::AgentCommand,
+    },
+    /// Agent skills that come with tv: list them, print one, or install one.
+    Skills {
+        #[command(subcommand)]
+        command: Option<skills::SkillsCommand>,
     },
     /// Session maintenance.
     Session {
@@ -383,6 +389,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Rm { ids, force }) => rm(&sessions, ids, *force),
         Some(Command::Save { id, path }) => save(&sessions, id, path),
         Some(Command::Agent { command }) => agent::run(&sessions, command),
+        Some(Command::Skills { command }) => skills::run(command.as_ref()),
         Some(Command::Session {
             command:
                 SessionCommand::Prune {

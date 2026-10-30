@@ -153,6 +153,9 @@ On table reload:
 | `tv ls` | List sessions: id, title, rows × cols, whether a viewer is open, how many threads are awaiting a reply, last modified. |
 | `tv save <id> <file.json>` | Write table + comments to a file. |
 | `tv rm <id>… [--force]` | Delete sessions. Refuses a session whose viewer is open, unless `--force`. |
+| `tv skills` | List the agent skills that come with tv. |
+| `tv skills show <name>` | Print a skill's `SKILL.md`. |
+| `tv skills install <name> --to <dir>` | Write `<dir>/<name>/SKILL.md`, making the directories. It never replaces a file: the same text is fine, and different text is an error. |
 
 An argument to `tv open` is treated as a file if it contains `.` or `/`, and as a session ID otherwise.
 
@@ -348,7 +351,7 @@ src/
   time.rs          # RFC 3339 timestamps (ls, view.json, comments)
   comments.rs      # comment events and threads, the log's line format, folding events into threads
   agent.rs         # tv agent subcommands: their clap definitions and JSON output
-  agent_help.txt   # guide text, include_str!'d
+  skills.rs        # bundled skills (tv skills)
   viewer/
     mod.rs         # terminal setup/teardown, event loop (key events + 250ms tick)
     app.rs         # App state: table, cursor, scroll, mode (Grid/Detail/Record/Command/Comment/ConfirmDelete/Help), highlights, comment threads
@@ -357,6 +360,8 @@ src/
     sync.rs        # the viewer's file IO: writes view.json and comments, polls table.json and comments.jsonl, applies goto.json
     diff.rs        # after a reload: where the cursor goes, which cells changed
 ```
+
+Skills live outside `src/`, one directory each: `skills/<name>/SKILL.md`. `skills.rs` `include_str!`s them.
 
 Keep `render` pure (state in, frame out) and keep all mutation in `app.rs`. This is the standard ratatui pattern and avoids borrow-checker trouble.
 
@@ -388,6 +393,6 @@ Decisions made while planning. Work is tracked in the Linear project "table view
 - **Agent can move the cursor:** `tv agent goto`, under "Agent CLI". Reverses the "Not doing" entry above.
 - **Command line.** `:` opens a vim-style command line in the viewer. `:w [path]` saves, `:help`, `:q`. Single-key bindings from the Keys table remain as shortcuts. The command line is the extension point for future commands.
 - **Session pruning.** No automatic pruning. `tv session prune [--older-than 7d] [--closed] [--dry-run]` is explicit.
-- **Skills.** `tv skills` lists bundled agent skills; `tv skills show <name>` prints one; `tv skills install <name> --to <dir>` writes it out.
+- **Skills:** `tv skills`, under "Human CLI".
 - **Name.** The binary stays `tv`. The crates.io name `tv` is taken by tidy-viewer, so publish the crate under a different name (e.g. `tv-table`) with `[[bin]] name = "tv"`.
 - **Build tooling.** `make` builds, `make run` opens `examples/prs.json`, `make test` runs tests, `make check` runs fmt + clippy + tests (what CI runs).
