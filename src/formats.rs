@@ -79,6 +79,13 @@ struct Record {
     cells: Vec<String>,
 }
 
+impl Record {
+    /// A blank line: one empty cell.
+    fn is_blank(&self) -> bool {
+        matches!(self.cells.as_slice(), [only] if only.is_empty())
+    }
+}
+
 /// Whichever of comma, tab, semicolon and `|` the header line has most of.
 /// A tie goes to the earlier one, so a line with none is one column of CSV.
 fn delimiter(header: &str) -> char {
@@ -90,23 +97,39 @@ fn delimiter(header: &str) -> char {
 
 /// CSV, TSV and the like: a header line, then a line per row.
 fn delimited(text: &str, delimiter: char) -> anyhow::Result<Value> {
-    let records = split_records(text, delimiter)?;
-    let Some((header, rows)) = records.split_first() else {
+    let mut records = split_records(text, delimiter)?
+        .into_iter()
+        .skip_while(Record::is_blank);
+    let Some(header) = records.next() else {
         bail!("the input is empty");
     };
-    // Without this, any line of text would be a table with one column and
-    // no rows: an error message piped in by mistake, say.
-    if header.cells.len() == 1 && rows.is_empty() {
+    // In a one-column table, a blank line is a row whose cell is empty: it's
+    // how `sqlite3 -csv` and `psql --csv` write NULL there. With more
+    // columns, it's only a blank line.
+    let one_column = header.cells.len() == 1;
+    let rows: Vec<Record> = records
+        .filter(|record| one_column || !record.is_blank())
+        .collect();
+    // Without this, a line of text with no delimiter in it, such as a
+    // one-word message piped in by mistake, would be a table with one column
+    // and no rows. A line with a delimiter is still a header with no rows,
+    // as an empty query result should be.
+    if one_column && rows.iter().all(Record::is_blank) {
         bail!("not a table: one line of text, with nothing to split it into columns");
     }
-    table_from_records(header, rows)
+    table_from_records(&header, &rows)
 }
 
 /// Split `text` into records, as RFC 4180 describes CSV. A field that starts
 /// with `"` is quoted: it can hold the delimiter and line breaks, and `""`
 /// in it is one `"`. A `"` anywhere else is just a character. Lines end in
-/// `\n` or `\r\n`, and blank lines are skipped.
+/// `\n` or `\r\n`, and a blank line is a record of one empty cell.
 fn split_records(text: &str, delimiter: char) -> anyhow::Result<Vec<Record>> {
+    // A final line break ends the last line rather than starting another.
+    let text = text
+        .strip_suffix("\r\n")
+        .or_else(|| text.strip_suffix('\n'))
+        .unwrap_or(text);
     let mut records = Vec::new();
     let mut cells = Vec::new();
     let mut cell = String::new();
@@ -134,7 +157,10 @@ fn split_records(text: &str, delimiter: char) -> anyhow::Result<Vec<Record>> {
             '\r' if chars.peek() == Some(&'\n') => {}
             '\n' => {
                 cells.push(std::mem::take(&mut cell));
-                push_record(&mut records, record_line, std::mem::take(&mut cells));
+                records.push(Record {
+                    line: record_line,
+                    cells: std::mem::take(&mut cells),
+                });
                 line += 1;
                 record_line = line;
             }
@@ -146,15 +172,11 @@ fn split_records(text: &str, delimiter: char) -> anyhow::Result<Vec<Record>> {
         bail!("line {line}: a quoted field has no closing quote");
     }
     cells.push(cell);
-    push_record(&mut records, record_line, cells);
+    records.push(Record {
+        line: record_line,
+        cells,
+    });
     Ok(records)
-}
-
-/// Add a record, unless it's a blank line: one empty cell.
-fn push_record(records: &mut Vec<Record>, line: usize, cells: Vec<String>) {
-    if !matches!(cells.as_slice(), [only] if only.is_empty()) {
-        records.push(Record { line, cells });
-    }
 }
 
 /// A Markdown pipe table: a header row, a `|---|` row under it, then the
@@ -498,6 +520,16 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_line_is_an_empty_row_in_one_column() {
+        // How `sqlite3 -csv` and `psql --csv` write NULL in a one-column
+        // result, at the end too.
+        let expected =
+            json!([{"email": "a@x"}, {"email": null}, {"email": "b@x"}, {"email": null}]);
+        assert_eq!(rows("email\na@x\n\nb@x\n\n"), expected);
+        assert_eq!(rows("email\r\na@x\r\n\"\"\r\nb@x\r\n\"\"\r\n"), expected);
+    }
+
+    #[test]
     fn extra_cells_are_an_error_unless_empty() {
         assert_eq!(rows("a,b\n1,2,\n"), json!([{"a": 1, "b": 2}]));
     }
@@ -525,7 +557,12 @@ mod tests {
 
     #[test]
     fn one_line_of_plain_text_is_not_a_table() {
-        for text in ["not json", "5", "\"quoted, still one cell\"\n"] {
+        for text in [
+            "not json",
+            "not json\n\n",
+            "5",
+            "\"quoted, still one cell\"\n",
+        ] {
             assert!(error(text).starts_with("not a table"), "{text}");
         }
     }

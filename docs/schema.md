@@ -66,12 +66,13 @@ A UTF-8 byte order mark is skipped. Empty input is an error.
 ### CSV and TSV
 
 - The first line is the header.
-- Quoting follows RFC 4180: a field that starts with `"` can hold the delimiter and line breaks, and `""` inside it is one `"`. Lines end in `\n` or `\r\n`. Blank lines are skipped.
+- Quoting follows RFC 4180: a field that starts with `"` can hold the delimiter and line breaks, and `""` inside it is one `"`. Lines end in `\n` or `\r\n`.
+- Blank lines are skipped, except in a one-column table. There a blank line is a row with an empty cell, since that's how `sqlite3 -csv` and `psql --csv` write NULL.
 - Empty and missing cells are null.
 - A column holds numbers if every non-empty cell is a JSON number that writes back exactly as written (`412`, `-2.5`), and booleans likewise (`true`, `false`). Any other column holds text, so `02134` and `1.50` show as written.
 - An empty header cell is named `column_<n>`, counting from 1. A repeated name gets `_2`, `_3`, ….
 - A row with more cells than the header is an error, unless the extra cells are empty (a trailing delimiter).
-- One line with no delimiter is an error rather than a one-column table, so a stray message piped in doesn't become a session.
+- One line with no delimiter in it is an error, not a one-column table with no rows. That catches a one-word message piped in by mistake. A line with a delimiter is a header with no rows, which is valid: `psql --csv` prints one for an empty result.
 
 ### Markdown tables
 
