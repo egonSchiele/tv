@@ -527,6 +527,28 @@ fn a_broken_csv_file_says_where_and_makes_no_session() {
 }
 
 #[test]
+fn agent_new_titles_a_file_by_its_name() {
+    let home = tempfile::tempdir().unwrap();
+    let file = home.path().join("sales.csv");
+    fs::write(&file, "region,total\neast,10\n").unwrap();
+    let path = file.to_str().unwrap();
+    let created = agent(home.path(), &["new", path], "");
+    let table = agent(
+        home.path(),
+        &["get", created["session"].as_str().unwrap()],
+        "",
+    );
+    assert_eq!(table["title"], "sales.csv");
+    let created = agent(home.path(), &["new", path, "--title", "Sales"], "");
+    let table = agent(
+        home.path(),
+        &["get", created["session"].as_str().unwrap()],
+        "",
+    );
+    assert_eq!(table["title"], "Sales");
+}
+
+#[test]
 fn agent_new_without_a_table_makes_no_session() {
     let home = tempfile::tempdir().unwrap();
     assert_fails_with(&agent_output(home.path(), &["new"], ""), "parsing stdin");

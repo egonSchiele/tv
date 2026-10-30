@@ -2,6 +2,7 @@
 //! column and type inference, and validation. See `docs/schema.md`.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::Path;
 
 use anyhow::Context;
@@ -157,10 +158,17 @@ impl Table {
     }
 
     /// A file a user or agent names: `parse_input` on its text, with `set`
-    /// and `fill` as there.
+    /// and `fill` as there. The file's name is the title of last resort:
+    /// CSV has nowhere to put one, and `tv ls` needs something to tell
+    /// sessions apart.
     pub fn from_input_path(path: impl AsRef<Path>, set: Meta, fill: Meta) -> anyhow::Result<Table> {
         let path = path.as_ref();
         let text = files::read_text(path)?;
+        let name = path.file_name().and_then(OsStr::to_str);
+        let fill = Meta {
+            title: fill.title.or(name),
+            ..fill
+        };
         Table::parse_input(&text, set, fill).with_context(|| format!("parsing {}", path.display()))
     }
 
@@ -596,6 +604,32 @@ mod tests {
             Table::parse_input("id\na\na\n", meta(None, Some("id")), Meta::default()).unwrap_err();
         let message = format!("{error:#}");
         assert!(message.contains("duplicate key value \"a\""), "{message}");
+    }
+
+    #[test]
+    fn from_input_path_titles_a_file_by_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sales.csv");
+        std::fs::write(&path, "a,b\n1,2\n").unwrap();
+        let title = |set: Meta, fill: Meta| Table::from_input_path(&path, set, fill).unwrap().title;
+        assert_eq!(
+            title(Meta::default(), Meta::default()).as_deref(),
+            Some("sales.csv")
+        );
+        // A title passed in, or kept from the session, comes first.
+        assert_eq!(
+            title(meta(Some("Set"), None), Meta::default()).as_deref(),
+            Some("Set")
+        );
+        assert_eq!(
+            title(Meta::default(), meta(Some("Kept"), None)).as_deref(),
+            Some("Kept")
+        );
+        // So does the file's own, and its `null`.
+        let own = Table::from_input_path("examples/prs.json", Meta::default(), Meta::default());
+        assert_eq!(own.unwrap().title.as_deref(), Some("Open pull requests"));
+        std::fs::write(&path, r#"{"title": null, "rows": []}"#).unwrap();
+        assert_eq!(title(Meta::default(), Meta::default()), None);
     }
 
     #[test]
