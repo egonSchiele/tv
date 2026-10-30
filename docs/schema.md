@@ -1,6 +1,6 @@
 # Table format
 
-`tv` reads and writes tables as JSON. The same format is the input to `tv agent new` and `tv agent push`, and the output of `tv save` and `tv agent get`.
+`tv` writes tables as JSON, in the format below: it's what `tv save` and `tv agent get` print. It reads that format, and the [input formats](#input-formats) further down.
 
 ## Full format
 
@@ -43,6 +43,51 @@ A bare JSON array of objects is also a table. It's the same as `{ "rows": [...] 
 ```sh
 gh pr list --json number,title,author | tv agent new --key number --title "Open PRs"
 ```
+
+## Input formats
+
+`tv open`, `tv -`, `tv agent new` and `tv agent push` read more than this format. Each input becomes a table in this format, which is what a session stores and what `tv agent get` and `tv save` print. The first non-blank line decides how the input is read:
+
+| First character | Read as |
+|---|---|
+| `{` or `[` | JSON, below |
+| `\|` | A Markdown table |
+| anything else | CSV, TSV or the like. The delimiter is whichever of `,`, tab, `;` and `\|` the first line has most of. |
+
+A UTF-8 byte order mark is skipped. Empty input is an error.
+
+### JSON
+
+- **One object with `rows`:** the full format.
+- **One array:** the shorthand.
+- **Several values in a row** (JSON Lines, `jq '.[]'` output, `gh api --paginate`): each object is a row, and each array's items are rows.
+- **One object without `rows`:** if its only array is a non-empty array of objects, as in `{"kind": "List", "items": [...]}`, those are the rows. Otherwise the object is one row, and the record view (`r`) shows it a field per line.
+
+  This is a guess, and two cases fool it:
+  - A record with one array of objects is unwrapped. `gh pr view 12 --json title,labels` shows the labels, not the PR. Wrap it in an array, with `jq '[.]'`, to see the record.
+  - Pages of a wrapped list aren't unwrapped, since the rule is for a lone object. `gh api --paginate search/issues` shows a row per page. Add `--jq '.items[]'` to get the items.
+
+### CSV and TSV
+
+- The first line is the header.
+- Quoting follows RFC 4180: a field that starts with `"` can hold the delimiter and line breaks, and `""` inside it is one `"`. Lines end in `\n` or `\r\n`.
+- Spaces around an unquoted cell are dropped, so `name, age` has the columns `name` and `age`. A quoted cell keeps its spaces.
+- Blank lines are skipped, except in a one-column table. There a blank line is a row with an empty cell, since that's how `sqlite3 -csv` and `psql --csv` write NULL.
+- Empty and missing cells are null.
+- A column holds numbers if every non-empty cell is a JSON number that writes back exactly as written (`412`, `-2.5`), and booleans likewise (`true`, `false`). Any other column holds text, so `02134` and `1.50` show as written. So do integers past 2^53 (9007199254740992), such as 19-digit IDs, which a JSON reader that uses floats, like JavaScript's, would round.
+- An empty header cell is named `column_<n>`, counting from 1. A repeated name gets `_2`, `_3`, ….
+- A row with more cells than the header is an error, unless the extra cells are empty (a trailing delimiter).
+- One line with no delimiter in it is an error, not a one-column table with no rows. That catches a one-word message piped in by mistake. A line with a delimiter is a header with no rows, which is valid: `psql --csv` prints one for an empty result.
+
+### Markdown tables
+
+- A header row, a `|---|` row under it (`:` for alignment is allowed and ignored), then the rows.
+- Every non-blank line starts with `|`, so text above or below the table is an error. When you copy an agent's reply along with its table, copy only the table. A table inside a quoted CSV cell, such as an issue's description in a tracker's export, is just that cell's text. The closing `|` is optional. `\|` is a `|` inside a cell.
+- Cells are trimmed and typed like CSV's. Formatting such as `**bold**` stays as written.
+
+### Titles
+
+A file that names no title is titled with its file name, such as `sales.csv`. `--title`, the file's own `title`, and on `push` the session's title, all come first.
 
 ## Inference
 

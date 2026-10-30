@@ -467,6 +467,88 @@ fn agent_new_reads_a_file_or_dash() {
 }
 
 #[test]
+fn agent_push_reads_every_format_and_keeps_the_key() {
+    let home = tempfile::tempdir().unwrap();
+    let inputs = [
+        // JSON Lines, and `jq`'s pretty objects one after another
+        "{\"number\": 1, \"title\": \"a\"}\n{\"number\": 2, \"title\": \"b\"}\n",
+        "{\n  \"number\": 1,\n  \"title\": \"a\"\n}\n{\n  \"number\": 2,\n  \"title\": \"b\"\n}\n",
+        // CSV and TSV
+        "number,title\n1,a\n2,b\n",
+        "number\ttitle\n1\ta\n2\tb\n",
+        // A Markdown table
+        "| number | title |\n|---|---|\n| 1 | a |\n| 2 | b |\n",
+    ];
+    let expected = serde_json::json!([{"number": 1, "title": "a"}, {"number": 2, "title": "b"}]);
+    for input in inputs {
+        let id = new_session(home.path());
+        agent(home.path(), &["push", &id], input);
+        let table = agent(home.path(), &["get", &id], "");
+        assert_eq!(
+            (table["key"].as_str(), table["title"].as_str()),
+            (Some("number"), Some("PRs")),
+            "{input}"
+        );
+        assert_eq!(table["rows"], expected, "{input}");
+    }
+}
+
+#[test]
+fn agent_new_reads_csv_and_get_prints_json() {
+    let home = tempfile::tempdir().unwrap();
+    let csv = "id,name,score\n7,sam,1.5\n9,\"jo, jr\",\n";
+    let created = agent(home.path(), &["new", "--key", "id"], csv);
+    assert_eq!(
+        (created["rows"].as_u64(), created["columns"].as_u64()),
+        (Some(2), Some(3))
+    );
+    let id = created["session"].as_str().unwrap();
+    let table = agent(home.path(), &["get", id], "");
+    assert_eq!(table["key"], "id");
+    assert_eq!(
+        table["rows"],
+        serde_json::json!([
+            {"id": 7, "name": "sam", "score": 1.5},
+            {"id": 9, "name": "jo, jr", "score": null}
+        ])
+    );
+    assert_eq!(table["columns"][2]["type"], "number");
+}
+
+#[test]
+fn a_broken_csv_file_says_where_and_makes_no_session() {
+    let home = tempfile::tempdir().unwrap();
+    let file = home.path().join("bad.csv");
+    fs::write(&file, "a,b\n1,2\n3,\"oops\n").unwrap();
+    let output = tv(home.path(), &[file.to_str().unwrap()], "");
+    assert_fails_with(&output, "line 3: a quoted field has no closing quote");
+    assert!(stderr(&output).contains("bad.csv"), "{}", stderr(&output));
+    assert!(!home.path().join("sessions").exists());
+}
+
+#[test]
+fn agent_new_titles_a_file_by_its_name() {
+    let home = tempfile::tempdir().unwrap();
+    let file = home.path().join("sales.csv");
+    fs::write(&file, "region,total\neast,10\n").unwrap();
+    let path = file.to_str().unwrap();
+    let created = agent(home.path(), &["new", path], "");
+    let table = agent(
+        home.path(),
+        &["get", created["session"].as_str().unwrap()],
+        "",
+    );
+    assert_eq!(table["title"], "sales.csv");
+    let created = agent(home.path(), &["new", path, "--title", "Sales"], "");
+    let table = agent(
+        home.path(),
+        &["get", created["session"].as_str().unwrap()],
+        "",
+    );
+    assert_eq!(table["title"], "Sales");
+}
+
+#[test]
 fn agent_new_without_a_table_makes_no_session() {
     let home = tempfile::tempdir().unwrap();
     assert_fails_with(&agent_output(home.path(), &["new"], ""), "parsing stdin");

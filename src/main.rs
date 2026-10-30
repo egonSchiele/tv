@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 mod agent;
 mod comments;
 mod files;
+mod formats;
 mod session;
 mod skills;
 #[cfg(test)]
@@ -15,7 +16,7 @@ mod time;
 mod viewer;
 
 use session::{COMMENTS_FILE, Sessions};
-use table::{Table, single_line};
+use table::{Meta, Table, single_line};
 use viewer::layout::{Align, display_width, fit};
 
 /// A terminal table viewer you share with an agent.
@@ -33,8 +34,9 @@ use viewer::layout::{Align, display_width, fit};
     after_help = "Agents: `tv agent help` is a guide to using tv."
 )]
 struct Cli {
-    /// A JSON file to open (`.` or `/` in the name), `-` to read stdin, or a
+    /// A file to open (`.` or `/` in the name), `-` to read stdin, or a
     /// session ID. With none, the most recent session. Same as `tv open`.
+    /// Files and stdin can be JSON, JSON Lines, CSV, TSV or a Markdown table.
     target: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
@@ -163,7 +165,7 @@ fn load_stdin() -> anyhow::Result<Table> {
     // support that device), and fail with "Failed to initialize input reader".
     #[cfg(unix)]
     rustix::stdio::dup2_stdin(std::io::stdout()).context("attaching stdin to the terminal")?;
-    Table::parse(&text).context("parsing stdin")
+    Table::parse_input(&text, Meta::default(), Meta::default()).context("parsing stdin")
 }
 
 /// Open the viewer on `target`. A file or stdin becomes a new session first.
@@ -172,7 +174,11 @@ fn open(sessions: &Sessions, target: Target) -> anyhow::Result<()> {
     // changes and leaves no session behind.
     let session = match target {
         Target::Stdin => sessions.create(&load_stdin()?)?,
-        Target::File(path) => sessions.create(&Table::from_path(&path)?)?,
+        Target::File(path) => sessions.create(&Table::from_input_path(
+            &path,
+            Meta::default(),
+            Meta::default(),
+        )?)?,
         Target::Session(id) => sessions.open(&id)?,
         Target::MostRecent => sessions
             .most_recent()?

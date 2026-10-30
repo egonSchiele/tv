@@ -18,7 +18,7 @@ use crate::time;
 
 #[derive(Subcommand)]
 pub enum AgentCommand {
-    /// Create a session from FILE, or from JSON on stdin.
+    /// Create a session from FILE, or from stdin.
     New(TableInput),
     /// Replace a session's table. Same input as `new`.
     Push {
@@ -71,8 +71,8 @@ pub enum AgentCommand {
 /// The table `new` and `push` read, and what to set on it.
 #[derive(Args)]
 pub struct TableInput {
-    /// A JSON file: the table format, or a bare array of rows. Stdin without
-    /// one, or with `-`.
+    /// A file: JSON (the table format, an array of rows, or JSON Lines), CSV,
+    /// TSV or a Markdown table. Stdin without one, or with `-`.
     file: Option<String>,
     /// Set the title.
     #[arg(long)]
@@ -93,9 +93,9 @@ impl TableInput {
         };
         match self.file.as_deref() {
             None | Some("-") => {
-                Table::parse_with(&read_stdin()?, set, fill).context("parsing stdin")
+                Table::parse_input(&read_stdin()?, set, fill).context("parsing stdin")
             }
-            Some(path) => Table::from_path_with(path, set, fill),
+            Some(path) => Table::from_input_path(path, set, fill),
         }
     }
 }
@@ -105,7 +105,7 @@ impl TableInput {
 fn read_stdin() -> anyhow::Result<String> {
     let stdin = io::stdin();
     if stdin.is_terminal() {
-        bail!("no table: give a FILE, or pipe JSON to stdin");
+        bail!("no table: give a FILE, or pipe one to stdin");
     }
     io::read_to_string(stdin).context("reading stdin")
 }

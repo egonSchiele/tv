@@ -58,6 +58,11 @@ fn temp_path(path: &Path) -> io::Result<PathBuf> {
     Ok(path.with_file_name(temp_name))
 }
 
+/// `path`'s contents, with an error that names it.
+pub fn read_text(path: &Path) -> anyhow::Result<String> {
+    fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+}
+
 /// `~` and `~/rest` become the home directory. Anything else, including
 /// `~user`, is returned unchanged.
 pub fn expand_tilde(path: &str) -> PathBuf {

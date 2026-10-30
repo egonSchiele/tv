@@ -2,6 +2,7 @@
 //! column and type inference, and validation. See `docs/schema.md`.
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::Path;
 
 use anyhow::Context;
@@ -10,6 +11,7 @@ use serde_json::{Map, Value};
 
 use crate::comments::Thread;
 use crate::files;
+use crate::formats;
 
 pub type Row = Map<String, Value>;
 
@@ -87,19 +89,30 @@ pub struct Meta<'a> {
 }
 
 impl Table {
-    /// Parse a table from JSON text, accepting either the full format or a bare
-    /// array of row objects.
+    /// Parse tv's own JSON: the table format, or a bare array of rows. This
+    /// reads a session's `table.json`, where taking other formats would only
+    /// hide a broken file. Input from users and agents goes through
+    /// `parse_input`.
     pub fn parse(text: &str) -> anyhow::Result<Table> {
-        Table::parse_with(text, Meta::default(), Meta::default())
+        Table::from_json(
+            serde_json::from_str(text)?,
+            Meta::default(),
+            Meta::default(),
+        )
     }
 
-    /// `parse`, with `set` replacing the text's `title` and `key`, and `fill`
-    /// supplying them where the text has neither a value nor `null`. `set`
-    /// applies before validation, so a `--key` is checked like one in the
-    /// file. A key from `fill` gets the same check just after, so that its
-    /// error, and no other, can say where the key came from.
-    pub fn parse_with(text: &str, set: Meta, fill: Meta) -> anyhow::Result<Table> {
-        let mut value: Value = serde_json::from_str(text)?;
+    /// Parse input in any format `formats::to_json` reads, with `set`
+    /// replacing its `title` and `key`, and `fill` supplying them where the
+    /// input has neither a value nor `null`. `set` applies before
+    /// validation, so a `--key` is checked like one in the file. A key from
+    /// `fill` gets the same check just after, so that its error, and no
+    /// other, can say where the key came from.
+    pub fn parse_input(text: &str, set: Meta, fill: Meta) -> anyhow::Result<Table> {
+        Table::from_json(formats::to_json(text)?, set, fill)
+    }
+
+    /// The table in `value`, as `parse` and `parse_input` describe.
+    fn from_json(mut value: Value, set: Meta, fill: Meta) -> anyhow::Result<Table> {
         if value.is_array() {
             let mut wrapper = Map::new();
             wrapper.insert("rows".to_string(), value);
@@ -137,16 +150,26 @@ impl Table {
         Ok(table)
     }
 
+    /// A session's `table.json`: `parse` on the file's text.
     pub fn from_path(path: impl AsRef<Path>) -> anyhow::Result<Table> {
-        Table::from_path_with(path, Meta::default(), Meta::default())
+        let path = path.as_ref();
+        Table::parse(&files::read_text(path)?)
+            .with_context(|| format!("parsing {}", path.display()))
     }
 
-    /// `from_path`, with `set` and `fill` applied as in `parse_with`.
-    pub fn from_path_with(path: impl AsRef<Path>, set: Meta, fill: Meta) -> anyhow::Result<Table> {
+    /// A file a user or agent names: `parse_input` on its text, with `set`
+    /// and `fill` as there. The file's name is the title of last resort:
+    /// CSV has nowhere to put one, and `tv ls` needs something to tell
+    /// sessions apart.
+    pub fn from_input_path(path: impl AsRef<Path>, set: Meta, fill: Meta) -> anyhow::Result<Table> {
         let path = path.as_ref();
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        Table::parse_with(&text, set, fill).with_context(|| format!("parsing {}", path.display()))
+        let text = files::read_text(path)?;
+        let name = path.file_name().and_then(OsStr::to_str);
+        let fill = Meta {
+            title: fill.title.or(name),
+            ..fill
+        };
+        Table::parse_input(&text, set, fill).with_context(|| format!("parsing {}", path.display()))
     }
 
     /// Write the table, comments included, in the full format. Inferred
@@ -245,9 +268,13 @@ fn infer_columns(rows: &[Row]) -> Vec<Column> {
 
 /// `Number` or `Bool` if every non-null value is one; otherwise `String`.
 fn infer_type(rows: &[Row], column: &str) -> ColumnType {
-    let mut kinds = rows
-        .iter()
-        .filter_map(|row| row.get(column))
+    values_type(rows.iter().filter_map(|row| row.get(column)))
+}
+
+/// `infer_type` for any values. CSV's cells use it too (`formats.rs`).
+pub fn values_type<'a>(values: impl IntoIterator<Item = &'a Value>) -> ColumnType {
+    let mut kinds = values
+        .into_iter()
         .filter(|value| !value.is_null())
         .map(scalar_type);
     match kinds.next() {
@@ -465,15 +492,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_with_sets_a_title_and_key() {
+    fn parse_input_sets_a_title_and_key() {
         let rows = r#"[{"id": 1}, {"id": 2}]"#;
-        let table = Table::parse_with(rows, meta(Some("T"), Some("id")), Meta::default()).unwrap();
+        let table = Table::parse_input(rows, meta(Some("T"), Some("id")), Meta::default()).unwrap();
         assert_eq!(
             (table.title.as_deref(), table.key.as_deref()),
             (Some("T"), Some("id"))
         );
         let file = r#"{"title": "old", "key": "x", "rows": [{"id": 1, "x": 1}]}"#;
-        let table = Table::parse_with(file, meta(Some("T"), Some("id")), Meta::default()).unwrap();
+        let table = Table::parse_input(file, meta(Some("T"), Some("id")), Meta::default()).unwrap();
         assert_eq!(
             (table.title.as_deref(), table.key.as_deref()),
             (Some("T"), Some("id"))
@@ -483,7 +510,7 @@ mod tests {
     #[test]
     fn a_set_key_is_validated_like_one_in_the_file() {
         let rows = r#"[{"id": 1}, {"id": 1}]"#;
-        let error = Table::parse_with(rows, meta(None, Some("id")), Meta::default()).unwrap_err();
+        let error = Table::parse_input(rows, meta(None, Some("id")), Meta::default()).unwrap_err();
         let message = format!("{error:#}");
         assert!(
             message.contains("duplicate key value \"1\" at rows 0 and 1"),
@@ -495,23 +522,23 @@ mod tests {
     #[test]
     fn fill_supplies_only_what_the_text_doesnt_have() {
         let fill = meta(Some("kept"), Some("id"));
-        let table = Table::parse_with(r#"[{"id": 1}]"#, Meta::default(), fill).unwrap();
+        let table = Table::parse_input(r#"[{"id": 1}]"#, Meta::default(), fill).unwrap();
         assert_eq!(
             (table.title.as_deref(), table.key.as_deref()),
             (Some("kept"), Some("id"))
         );
         let own = r#"{"title": "own", "key": "n", "rows": [{"id": 1, "n": 1}]}"#;
-        let table = Table::parse_with(own, Meta::default(), fill).unwrap();
+        let table = Table::parse_input(own, Meta::default(), fill).unwrap();
         assert_eq!(
             (table.title.as_deref(), table.key.as_deref()),
             (Some("own"), Some("n"))
         );
         // `null` counts as naming the field: it's how a push drops a key.
         let nulls = r#"{"title": null, "key": null, "rows": [{"id": 1}]}"#;
-        let table = Table::parse_with(nulls, Meta::default(), fill).unwrap();
+        let table = Table::parse_input(nulls, Meta::default(), fill).unwrap();
         assert_eq!((table.title, table.key), (None, None));
         // What's set wins over `fill`.
-        let table = Table::parse_with(r#"[{"id": 1}]"#, meta(Some("set"), None), fill).unwrap();
+        let table = Table::parse_input(r#"[{"id": 1}]"#, meta(Some("set"), None), fill).unwrap();
         assert_eq!(table.title.as_deref(), Some("set"));
     }
 
@@ -519,7 +546,7 @@ mod tests {
     fn a_kept_key_that_fails_says_where_it_came_from() {
         let fill = meta(None, Some("number"));
         for rows in [r#"[{"title": "a"}]"#, r#"[{"number": 1}, {"number": 1}]"#] {
-            let error = Table::parse_with(rows, Meta::default(), fill).unwrap_err();
+            let error = Table::parse_input(rows, Meta::default(), fill).unwrap_err();
             let message = format!("{error:#}");
             assert!(
                 message.starts_with("kept the session's key \"number\""),
@@ -533,15 +560,15 @@ mod tests {
     fn other_errors_dont_blame_the_kept_key() {
         let fill = meta(None, Some("number"));
         for text in ["[1, 2]", "5", r#"{"rows": 5}"#] {
-            let error = Table::parse_with(text, Meta::default(), fill).unwrap_err();
+            let error = Table::parse_input(text, Meta::default(), fill).unwrap_err();
             let message = format!("{error:#}");
             assert!(!message.contains("kept"), "{text}: {message}");
         }
     }
 
     #[test]
-    fn from_path_with_applies_meta() {
-        let table = Table::from_path_with(
+    fn from_input_path_applies_meta() {
+        let table = Table::from_input_path(
             "examples/prs.json",
             meta(Some("PRs"), None),
             Meta::default(),
@@ -550,8 +577,59 @@ mod tests {
         assert_eq!(table.title.as_deref(), Some("PRs"));
         assert_eq!(table.key.as_deref(), Some("number"));
         let error =
-            Table::from_path_with("no/such.json", Meta::default(), Meta::default()).unwrap_err();
+            Table::from_input_path("no/such.json", Meta::default(), Meta::default()).unwrap_err();
         assert!(format!("{error:#}").starts_with("reading no/such.json"));
+    }
+
+    #[test]
+    fn parse_reads_only_json_and_parse_input_reads_any_format() {
+        let lines = "{\"id\": \"a\"}\n{\"id\": \"b\"}\n";
+        assert!(Table::parse(lines).is_err());
+        let table = Table::parse_input(lines, meta(None, Some("id")), Meta::default()).unwrap();
+        assert_eq!(table.row_id(1), "b");
+    }
+
+    #[test]
+    fn csv_columns_get_types() {
+        let table =
+            Table::parse_input("id,n\na,1\nb,2\n", Meta::default(), Meta::default()).unwrap();
+        assert_eq!(column_names(&table), ["id", "n"]);
+        let kinds: Vec<_> = table.columns.iter().map(|column| column.kind).collect();
+        assert_eq!(kinds, [Some(ColumnType::String), Some(ColumnType::Number)]);
+    }
+
+    #[test]
+    fn a_csv_key_is_validated_like_any_other() {
+        let error =
+            Table::parse_input("id\na\na\n", meta(None, Some("id")), Meta::default()).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("duplicate key value \"a\""), "{message}");
+    }
+
+    #[test]
+    fn from_input_path_titles_a_file_by_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sales.csv");
+        std::fs::write(&path, "a,b\n1,2\n").unwrap();
+        let title = |set: Meta, fill: Meta| Table::from_input_path(&path, set, fill).unwrap().title;
+        assert_eq!(
+            title(Meta::default(), Meta::default()).as_deref(),
+            Some("sales.csv")
+        );
+        // A title passed in, or kept from the session, comes first.
+        assert_eq!(
+            title(meta(Some("Set"), None), Meta::default()).as_deref(),
+            Some("Set")
+        );
+        assert_eq!(
+            title(Meta::default(), meta(Some("Kept"), None)).as_deref(),
+            Some("Kept")
+        );
+        // So does the file's own, and its `null`.
+        let own = Table::from_input_path("examples/prs.json", Meta::default(), Meta::default());
+        assert_eq!(own.unwrap().title.as_deref(), Some("Open pull requests"));
+        std::fs::write(&path, r#"{"title": null, "rows": []}"#).unwrap();
+        assert_eq!(title(Meta::default(), Meta::default()), None);
     }
 
     #[test]

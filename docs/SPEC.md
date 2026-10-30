@@ -30,7 +30,7 @@ The agent learns the tool by running `tv agent help`. A user should be able to t
 | Sorting / filtering / search in viewer | Moderate effort; the agent can re-push a sorted/filtered table on request. Search (`/`) is the first candidate for v2. |
 | Row patch API | Agent can `get`, modify (e.g. with `jq`), and `push`. Add `patch` if full re-pushes prove slow. |
 | Multi-cell selection | Cursor-only covers "this one". |
-| CSV / other input formats | JSON only. Agents can convert. |
+| ~~CSV / other input formats~~ | **Reversed 2026-10-29.** See "Input formats" under "Table format". |
 | ~~Agent moving the human's cursor~~ | **Reversed 2026-10-28.** See `tv agent goto` under "Agent CLI". |
 | Auto-opening the viewer (tmux splits etc.) | Environment-specific. The agent just tells the human what to run. |
 
@@ -80,6 +80,8 @@ This one format is used as input to `new`/`push` and as output of `save` and `ge
 ```sh
 gh pr list --json number,title,author | tv agent new --key number --title "Open PRs"
 ```
+
+**Input formats:** input can also be JSON Lines (or any JSON values one after another), an object wrapping one array of rows, a single record, CSV, TSV or a Markdown table. The first non-blank line decides how it's read. Each becomes this format, which is what a session stores, so nothing after loading knows what the input was. A file that names no title is titled with its file name. Details are in "Input formats" in `docs/schema.md`.
 
 **Cell values:** strings, numbers, booleans, and null render directly. Nested objects/arrays render as compact JSON in the grid and pretty-printed JSON in the cell detail view.
 
@@ -149,7 +151,7 @@ On table reload:
 |---|---|
 | `tv open` | Open the most recently modified session. |
 | `tv open <id>` | Open a session. |
-| `tv open <file.json>` | Create a new session from the file (including comments) and open it. |
+| `tv open <file>` | Create a new session from the file and open it. Any input format; a saved file's comments are imported. |
 | `tv ls` | List sessions: id, title, rows × cols, whether a viewer is open, how many threads are awaiting a reply, last modified. |
 | `tv save <id> <file.json>` | Write table + comments to a file. |
 | `tv rm <id>… [--force]` | Delete sessions. Refuses a session whose viewer is open, unless `--force`. |
@@ -219,7 +221,7 @@ Prints the agent guide (see below). The guide is the body of the bundled `tv-tab
 
 ### `tv agent new [FILE] [--title T] [--key K]`
 
-Create a session from FILE or stdin (`-`, or no FILE). `--title` and `--key` override or fill in the file's values, before the key is validated. Comments in the file are imported, as with `tv open <file.json>`.
+Create a session from FILE or stdin (`-`, or no FILE). `--title` and `--key` override or fill in the file's values, before the key is validated. Comments in the file are imported, as with `tv open <file>`. FILE and stdin can be in any input format (see "Table format"). A file that names no title is titled with its file name.
 
 ```json
 { "session": "k3f9x2", "open_command": "tv open k3f9x2", "rows": 38, "columns": 9 }
@@ -348,6 +350,7 @@ Keep dependencies few to limit supply-chain risk (see "Dependencies" in README.m
 src/
   main.rs          # clap definitions, dispatch
   table.rs         # Table/Column/Value types, parsing, shorthand, inference, validation, row IDs
+  formats.rs       # input formats: JSON Lines and other JSON shapes, CSV, TSV and Markdown tables, turned into the JSON table.rs reads
   files.rs         # atomic writes, ~ expansion, slugs (shared by :w and sessions)
   session.rs       # paths, ID generation, listing, most-recent lookup, safe removal, view.json and viewer-open check, reading and appending comments.jsonl
   time.rs          # RFC 3339 timestamps (ls, view.json, comments)
@@ -369,7 +372,7 @@ Keep `render` pure (state in, frame out) and keep all mutation in `app.rs`. This
 
 ### Testing
 
-- Unit tests: table inference and validation, row ID derivation, comment folding (awaiting/orphaned/deleted), column width and visible-range calculation.
+- Unit tests: table inference and validation, input formats, row ID derivation, comment folding (awaiting/orphaned/deleted), column width and visible-range calculation.
 - Render snapshots: ratatui `TestBackend` rendered to text and compared to a committed `.txt` file (`make snapshots` rewrites them; review with `git diff`) for the grid, truncation, pinned column, comment markers, and record view.
 - CLI tests: `std::process::Command` on `env!("CARGO_BIN_EXE_tv")` with `TV_HOME` pointed at a temp dir; exercise new → push → comment → reply → save → open-file round trip.
 - Guide tests: unit tests parse every command in the agent guide's examples with the real CLI parser, and check its Reference against the `tv agent` subcommands and their flags.
@@ -397,5 +400,6 @@ Decisions made while planning. Work is tracked in the Linear project "table view
 - **Command line.** `:` opens a vim-style command line in the viewer. `:w [path]` saves, `:help`, `:q`. Single-key bindings from the Keys table remain as shortcuts. The command line is the extension point for future commands.
 - **Session pruning.** No automatic pruning. `tv session prune [--older-than 7d] [--closed] [--dry-run]` is explicit.
 - **Skills:** `tv skills`, under "Human CLI".
+- **Input formats:** CSV, TSV, JSON Lines and Markdown tables, under "Table format". Reverses the "Not doing" entry.
 - **Name.** The binary stays `tv`. The crates.io name `tv` is taken by tidy-viewer, so publish the crate under a different name (e.g. `tv-table`) with `[[bin]] name = "tv"`.
 - **Build tooling.** `make` builds, `make run` opens `examples/prs.json`, `make test` runs tests, `make check` runs fmt + clippy + tests (what CI runs).
